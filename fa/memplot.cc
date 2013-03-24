@@ -23,7 +23,6 @@
 #include <libgen.h>
 
 // Forester headers
-#include "exec_state.hh"
 #include "forestautext.hh"
 #include "memplot.hh"
 #include "plotenum.hh"
@@ -53,6 +52,22 @@ std::string stateToString(const size_t state)
 	return os.str();
 }
 
+struct Pointer
+{
+	std::string src;      ///< Source of the pointer
+	std::string dst;      ///< Destination of the pointer
+	int offset;           ///< Offset into the destination
+
+	Pointer(
+		const std::string&    pSrc,
+		const std::string&    pDst,
+		int                   pOffset) :
+		src(pSrc),
+		dst(pDst),
+		offset(pOffset)
+	{ }
+};
+
 /// class for a memory node
 class MemNode
 {
@@ -73,6 +88,13 @@ public:   // data types
 		SelectorData(const std::string& name, size_t targetState) :
 			name(name), targetState(targetState)
 		{ }
+
+		friend std::ostream& operator<<(std::ostream& os, const SelectorData& sel)
+		{
+			os << sel.name;
+
+			return os;
+		}
 	};
 
 	typedef std::vector<std::pair<SelData, SelectorData>> SelectorVec;
@@ -92,17 +114,23 @@ public:   // data members
 //{
 
 	/// data fields for a block
-	struct
+	struct BlockFields
 	{
-		/// the name of the memory node
-		std::string name;
+		std::string name;        ///< the name of the memory node
+		SelectorVec selVec;      ///< vector of selectors inside a memory node
 
-		/// vector of selectors inside a memory node
-		SelectorVec selVec;
+		BlockFields(const std::string& pName, const SelectorVec& pSelVec) :
+			name(pName),
+			selVec(pSelVec)
+		{ }
 	} block_;
 
 	/// data fields for a tree reference
-	size_t treeref_;
+	struct
+	{
+		size_t root;             ///< the index of the root
+		int offset;              ///< the offset from the base of the root
+	} treeref_;
 
 	/// the string of the data field
 	std::string dataField_;
@@ -116,7 +144,7 @@ private:  // methods
 		id_{id},
 		type_{type},
 		block_{std::string(), SelectorVec()},
-		treeref_{},
+		treeref_{0, 0},
 		dataField_{}
 	{ }
 
@@ -126,7 +154,7 @@ public:   // methods
 		id_{node.id_},
 		type_{node.type_},
 		block_(node.block_),
-		treeref_{node.treeref_},
+		treeref_(node.treeref_),
 		dataField_{node.dataField_}
 	{ }
 
@@ -146,12 +174,53 @@ public:   // methods
 		return node;
 	}
 
-	static MemNode createTreeRef(size_t nodeId, size_t treeref)
+	static MemNode createTreeRef(size_t nodeId, size_t root, int offset)
 	{
 		MemNode node(nodeId, mem_type::t_treeref);
-		node.treeref_ = treeref;
+		node.treeref_.root   = root;
+		node.treeref_.offset = offset;
 
 		return node;
+	}
+
+	friend std::ostream& operator<<(std::ostream& os, const MemNode& node)
+	{
+		os << "Node " << node.id_ << "\n";
+		os << " type: ";
+
+		switch (node.type_)
+		{
+			case mem_type::t_block:
+				os << "block " << node.block_.name << "(";
+				for (auto it = node.block_.selVec.cbegin(); it != node.block_.selVec.cend(); ++it)
+				{	// for all selectors
+					if (node.block_.selVec.cbegin() != it)
+					{
+						os << ", ";
+					}
+
+					os << it->second;
+				}
+
+				os << ")";
+				break;
+
+			case mem_type::t_datafield:
+				os << "data";
+				break;
+
+			case mem_type::t_treeref:
+				os << "treeref";
+				break;
+
+			default:
+				assert(false);         // fail gracefully
+		}
+
+		os << "\n";
+
+
+		return os;
 	}
 };
 
@@ -241,16 +310,16 @@ private:  // data members
 	std::vector<TreeAutHeap> vecTreeAut_;
 
 	/// vector of pointers
-	std::vector<std::pair<std::string /* src */, std::string /* dst */>> pointers_;
+	std::vector<Pointer> pointers_;
 
 private:  // methods
 
 	DotPlotVisitor(const DotPlotVisitor&);
 	DotPlotVisitor& operator=(const DotPlotVisitor&);
 
-	void addPointer(const std::string& src, const std::string& dst)
+	void addPointer(const std::string& src, const std::string& dst, int offset)
 	{
-		pointers_.push_back(std::make_pair(src, dst));
+		pointers_.push_back(Pointer(src, dst, offset));
 	}
 
 	void addStateToMemNodeLink(size_t state, const MemNode& node)
@@ -266,6 +335,7 @@ private:  // methods
 		{
 			case data_type_e::t_undef:
 			case data_type_e::t_native_ptr:
+			case data_type_e::t_bool:
 			case data_type_e::t_int:
 			{
 				std::ostringstream os;
@@ -281,19 +351,14 @@ private:  // methods
 
 			case data_type_e::t_void_ptr:
 			{
-				assert(false);     // not supported
-			  break;
+				std::ostringstream os;
+				os << "(void*) [size=" << data.d_void_ptr_size << " B]";
+				return MemNode::createDataField(transID, os.str());
 			}
 
 			case data_type_e::t_ref:
 			{
-				return MemNode::createTreeRef(transID, data.d_ref.root);
-			}
-
-			case data_type_e::t_bool:
-			{
-				assert(false);     // not supported
-			  break;
+				return MemNode::createTreeRef(transID, data.d_ref.root, data.d_ref.displ);
 			}
 
 			case data_type_e::t_struct:
@@ -327,20 +392,6 @@ public:   // methods
 		pointers_{}
 	{ }
 
-	void operator()(const ExecState& state)
-	{
-		assert(nullptr != state.GetMem());
-		state.GetMem()->accept(*this);
-
-//		const DataArray& regs = state.GetRegs();
-//		for (size_t i = 0; i < regs.size(); ++i)
-//		{
-//			os_ << "  " << FA_QUOTE("reg" << i) << " -> " << dataToDot(regs[i]) << ";\n";
-//		}
-//
-//		os_ << "\n";
-	}
-
 	void operator()(const SymState& state)
 	{
 		state.GetFAE()->accept(*this);
@@ -348,39 +399,6 @@ public:   // methods
 
 	void operator()(const FA& fa)
 	{
-//		const DataArray& vars = fa.GetVariables();
-//		for (size_t i = 0; i < vars.size(); ++i)
-//		{
-//			os_ << "  " << FA_QUOTE("greg" << i) << " -> " << dataToDot(vars[i]) << ";\n";
-//		}
-//
-//		os_ << "\n";
-//
-//		// in the first traversal, create tree automata heap representation and set
-//		// the root memory node
-//		for (size_t i = 0; i < fa.getRootCount(); ++i)
-//		{
-//			assert(vecTreeAut_.size() == i);
-//
-//			TreeAutHeap taHeap;
-//
-//			if (nullptr != fa.getRoot(i))
-//			{
-//				const TreeAut& ta = *fa.getRoot(i);
-//				assert(ta.accBegin() != ta.accEnd());
-//
-//				if (++(ta.accBegin()) != ta.accEnd())
-//				{
-//					FA_NOTE("More accepting transitions! Considering only the first...");
-//				}
-//
-//				const Transition& trans = *ta.accBegin();
-//				taHeap.rootNodeID = getTransID(trans);
-//			}
-//
-//			vecTreeAut_.push_back(taHeap);
-//		}
-
 		for (size_t i = 0; i < fa.getRootCount(); ++i)
 		{
 			// Assertions
@@ -422,7 +440,7 @@ public:   // methods
 	{
 		const NodeLabel& label = *trans.label();
 
-		switch (label.type)
+		switch (label.GetType())
 		{
 			case NodeLabel::node_type::n_unknown:
 			{
@@ -435,11 +453,6 @@ public:   // methods
 				// Assertions
 				assert(nullptr != label.node.v);
 				assert(nullptr != label.node.m);
-
-				if (nullptr == label.node.sels)
-				{
-					FA_DEBUG("plotting non-selector label: " << label);
-				}
 
 				const std::vector<const AbstractBox*>& boxes = *label.node.v;
 				const std::vector<SelData>* sels             = label.node.sels;
@@ -478,14 +491,19 @@ public:   // methods
 					}
 					else if (boxes[i]->isBox())
 					{	// for hierarchical boxes
-						FA_DEBUG("plotting a box transition " << *boxes[i]);
+						const Box& box = *static_cast<const Box*>(boxes[i]);
 
-						const Box* box = static_cast<const Box*>(boxes[i]);
-
+						std::ostringstream osBox;
+						box.toStream(osBox);
 						// FIXME: this is also not correct
-						MemNode::SelectorData sel(box->getName(), trans.lhs()[i-1]);
+						MemNode::SelectorData sel(osBox.str(), trans.lhs()[i-1]);
+
+						// get the lowest output selector offset in the box
+						assert(!box.outputCoverage().empty());
+						size_t selOffset = *box.outputCoverage().cbegin();
+
 						node.block_.selVec.push_back(
-							std::make_pair(SelData(0, 0, 0, box->getName()), sel)
+							std::make_pair(SelData(selOffset, 0, 0, osBox.str()), sel)
 							);
 					}
 					else
@@ -525,8 +543,8 @@ public:   // methods
 	}
 
 	void plotMemNode(
-		const MemNode& node,
-		const TreeAutHeap::StateToMemNodeMap& stateMap)
+		const MemNode&                          node,
+		const TreeAutHeap::StateToMemNodeMap&   stateMap)
 	{
 		switch (node.type_)
 		{
@@ -589,7 +607,7 @@ public:   // methods
 
 				if (MemNode::mem_type::t_treeref == tmpNode.type_)
 				{	// if the node is a tree automaton reference
-					const TreeAutHeap& taHeap = vecTreeAut_[tmpNode.treeref_];
+					const TreeAutHeap& taHeap = vecTreeAut_[tmpNode.treeref_.root];
 
 					if (!taHeap.valid())
 					{
@@ -601,14 +619,14 @@ public:   // methods
 					{
 						std::ostringstream tmpOs;
 						tmpOs << *it;
-						this->addPointer(selId, tmpOs.str());
+						this->addPointer(selId, tmpOs.str(), tmpNode.treeref_.offset);
 					}
 				}
 				else
 				{	// in case the node is anything but the tree automaton reference
 					std::ostringstream tmpOs;
 					tmpOs << tmpNode.id_;
-					this->addPointer(selId, tmpOs.str());
+					this->addPointer(selId, tmpOs.str(), 0);
 				}
 			}
 		}
@@ -645,11 +663,19 @@ public:   // methods
 
 	void plotPointers() const
 	{
-		for (const auto& srcDstPair : pointers_)
+		for (const auto& ptr : pointers_)
 		{
-			os_ << "  " << FA_QUOTE(srcDstPair.first)
-				<< " -> " << FA_QUOTE(srcDstPair.second)
-				<< ";\n";
+			os_ << "  " << FA_QUOTE(ptr.src)
+				<< " -> " << FA_QUOTE(ptr.dst);
+
+			if (0 != ptr.offset)
+			{
+				os_ << " [label="
+				<< FA_QUOTE("[" << ((ptr.offset > 0)? "+" : "") << ptr.offset << "]")
+				<< "]";
+			}
+
+			os_ << ";\n";
 		}
 	}
 

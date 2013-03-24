@@ -150,10 +150,13 @@ struct CompareVariablesF
 	}
 };
 
-struct FuseNonZeroF
+struct FuseNonFixedF
 {
-	bool operator()(size_t root, FAE* fae)
+	bool operator()(size_t root, const FAE* fae)
 	{
+		// Preconditions
+		assert(nullptr != fae);
+
 		VirtualMachine vm(*fae);
 
 		for (size_t i = 0; i < FIXED_REG_COUNT; ++i)
@@ -168,27 +171,6 @@ struct FuseNonZeroF
 	}
 };
 
-void computeForbiddenSet(
-	std::set<size_t>&               forbidden,
-	FAE&                            fae)
-{
-	// Assertions
-	assert(fae.roots.size() == fae.connectionGraph.data.size());
-	assert(fae.roots.size() >= FIXED_REG_COUNT);
-
-	VirtualMachine vm(fae);
-
-	for (size_t i = 0; i < FIXED_REG_COUNT; ++i)
-	{
-		assert(fae.roots[vm.varGet(i).d_ref.root]);
-		forbidden.insert(vm.varGet(i).d_ref.root);
-	}
-
-	for (size_t i = 0; i < FIXED_REG_COUNT; ++i)
-	{
-		vm.getNearbyReferences(vm.varGet(i).d_ref.root, forbidden);
-	}
-}
 
 bool normalize(
 	FAE&                      fae,
@@ -210,6 +192,20 @@ bool normalize(
 	return result;
 }
 
+
+/**
+ * @brief  Folds a FA without learning
+ *
+ * This function folds a FA @p fae using boxes in the box manager @p boxMan, but
+ * avoiding the folding of cutpoints from @p forbidden. Note than no new boxes
+ * are learnt, only boxes already in @p boxMan are applied.
+ *
+ * @param[in]  fae        The forest automaton to be folded
+ * @param[in]  boxMan     The database of boxes
+ * @param[in]  forbidden  The set of cutpoints not allowed for folding
+ *
+ * @returns  @p true in the case something has been folded, @p false otherwise
+ */
 bool fold(
 	FAE&                         fae,
 	BoxMan&                      boxMan,
@@ -222,21 +218,33 @@ bool fold(
 
 	bool matched = false;
 
-	for (size_t i = 0; i < fae.roots.size(); ++i)
+	for (size_t i = 0; i < fae.getRootCount(); ++i)
 	{
-		if (forbidden.count(i))
+		if (forbidden.end() != forbidden.find(i))
+		{	// in the case the cutpoint is not allowed for folding
 			continue;
+		}
 
-		assert(fae.roots[i]);
+		assert(nullptr != fae.getRoot(i));
+
+		// Try to fold the 3 types of cutpoints starting from cutpoint 'i', but
+		// _ONLY_ using boxes which are _ALREADY_ in 'boxMan'. No learning of new
+		// boxes is allowed
 
 		if (folding.discover1(i, forbidden, true))
+		{
 			matched = true;
+		}
 
 		if (folding.discover2(i, forbidden, true))
+		{
 			matched = true;
+		}
 
 		if (folding.discover3(i, forbidden, true))
+		{
 			matched = true;
+		}
 	}
 
 	if (matched)
@@ -247,6 +255,16 @@ bool fold(
 	return matched;
 }
 
+
+/**
+ * @brief  Reorders components into the canonical order
+ *
+ * This function reorders the components of the FA @p fae @e without @e merging
+ * them together.
+ *
+ * @param[in]      state  The state of the symbolic execution
+ * @param[in,out]  fae    The forest automaton to be reordered
+ */
 void reorder(
 	const SymState*   state,
 	FAE&              fae)
@@ -260,8 +278,9 @@ void reorder(
 
 	norm.scan(marked, order, std::set<size_t>());
 
+	// normalize without merging (we say that all components are referred more
+	// than once), i.e. only reorder
 	std::fill(marked.begin(), marked.end(), true);
-
 	norm.normalize(marked, order);
 
 	FA_DEBUG_AT(3, "after reordering: " << std::endl << fae);
@@ -301,60 +320,6 @@ struct CopyNonZeroRhsF
 	}
 };
 
-void abstract(
-	FAE&                    fae,
-	TreeAut&                fwdConf,
-	TreeAut::Backend&       backend,
-	BoxMan&                 boxMan)
-{
-	fae.unreachableFree();
-
-	FA_DEBUG_AT(3, "before abstraction: " << std::endl << fae);
-
-#if FA_FUSION_ENABLED
-	// merge fixpoint
-	std::vector<FAE*> tmp;
-
-	ContainerGuard<std::vector<FAE*> > g(tmp);
-
-	FAE::loadCompatibleFAs(
-		tmp, fwdConf, backend, boxMan, &fae, 0, CompareVariablesF()
-	);
-
-	for (size_t i = 0; i < tmp.size(); ++i)
-	{
-		FA_DEBUG_AT(3, "accelerator " << std::endl << *tmp[i]);
-	}
-
-	fae.fuse(tmp, FuseNonZeroF());
-//	fae.fuse(fwdConf, FuseNonZeroF(), CopyNonZeroRhsF());
-
-	FA_DEBUG_AT(3, "fused " << std::endl << fae);
-#endif
-
-	// abstract
-	Abstraction abstraction(fae);
-
-	// the roots that will be excluded from abstraction
-	std::vector<bool> excludedRoots(fae.getRootCount(), false);
-
-	for (size_t i = 0; i < FIXED_REG_COUNT; ++i)
-	{
-		excludedRoots[VirtualMachine(fae).varGet(i).d_ref.root] = true;
-	}
-
-	for (size_t i = 0; i < fae.getRootCount(); ++i)
-	{
-		if (!excludedRoots[i])
-		{
-			abstraction.heightAbstraction(i, FA_ABS_HEIGHT, SmartTMatchF());
-	//		abstraction.heightAbstraction(i, FA_ABS_HEIGHT, SmarterTMatchF(fae));
-		}
-	}
-
-	FA_DEBUG_AT(3, "after abstraction: " << std::endl << fae);
-}
-
 
 void getCandidates(
 	std::set<size_t>&               candidates,
@@ -366,7 +331,7 @@ void getCandidates(
 		boost::hash<std::vector<std::pair<int, size_t>>>
 	> partition;
 
-	for (size_t i = 0; i < fae.roots.size(); ++i)
+	for (size_t i = 0; i < fae.getRootCount(); ++i)
 	{
 		std::vector<std::pair<int, size_t>> tmp;
 
@@ -388,76 +353,157 @@ void learn1(FAE& fae, BoxMan& boxMan)
 {
 	fae.unreachableFree();
 
-	std::set<size_t> forbidden;
+	std::set<size_t> forbidden = Normalization::computeForbiddenSet(fae);
 
 	Folding folding(fae, boxMan);
 
-	computeForbiddenSet(forbidden, fae);
-
-	for (size_t i = 0; i < fae.roots.size(); ++i)
+	for (size_t i = 0; i < fae.getRootCount(); ++i)
 	{
 		if (forbidden.count(i))
 			continue;
 
-		assert(fae.roots[i]);
+		assert(fae.getRoot(i));
 
 		folding.discover1(i, forbidden, false);
 		folding.discover2(i, forbidden, false);
 	}
 }
 
-void learn2(FAE& fae, BoxMan& boxMan)
+void learn2(
+	FAE&       fae,
+	BoxMan&    boxMan)
 {
 	fae.unreachableFree();
 
-	std::set<size_t> forbidden;
+	std::set<size_t> forbidden = Normalization::computeForbiddenSet(fae);
 
 	Folding folding(fae, boxMan);
 
-	computeForbiddenSet(forbidden, fae);
-
-	for (size_t i = 0; i < fae.roots.size(); ++i)
+	for (size_t i = 0; i < fae.getRootCount(); ++i)
 	{
 		if (forbidden.count(i))
 			continue;
 
-		assert(fae.roots[i]);
+		assert(fae.getRoot(i));
 
 		folding.discover3(i, forbidden, false);
 	}
 }
+} // namespace
+
+
+SymState* FixpointBase::reverseAndIsect(
+	ExecutionManager&                      execMan,
+	const SymState&                        fwdPred,
+	const SymState&                        bwdSucc) const
+{
+	(void)fwdPred;
+
+	SymState* tmpState = execMan.copyStateWithNewRegs(bwdSucc, fwdPred.GetInstr());
+
+	// perform intersection
+	tmpState->Intersect(fwdPred);
+
+	FA_WARN("Executing !!VERY!! suspicious reverse operation FixpointBase");
+	return tmpState;
 }
 
-// FI_abs
-void FI_abs::execute(ExecutionManager& execMan, const ExecState& state)
+
+void FI_abs::abstract(
+	FAE&                 fae)
 {
-	std::shared_ptr<FAE> fae = std::shared_ptr<FAE>(new FAE(*state.GetMem()->GetFAE()));
+	fae.unreachableFree();
+
+	FA_DEBUG_AT(3, "before abstraction: " << std::endl << fae);
+
+	if (FA_FUSION_ENABLED)
+	{
+		// merge fixpoint
+		std::vector<FAE*> tmp;
+
+		ContainerGuard<std::vector<FAE*>> g(tmp);
+
+		FAE::loadCompatibleFAs(
+			/* the result */ tmp,
+			fwdConf_,
+			taBackend_,
+			boxMan_,
+			fae,
+			0,
+			CompareVariablesF()
+		);
+
+		for (size_t i = 0; i < tmp.size(); ++i)
+		{
+			FA_DEBUG_AT(3, "accelerator " << std::endl << *tmp[i]);
+		}
+
+		fae.fuse(tmp, FuseNonFixedF());
+		FA_DEBUG_AT(3, "fused " << std::endl << fae);
+	}
+
+	// abstract
+	Abstraction abstraction(fae);
+
+	if (FA_USE_PREDICATE_ABSTRACTION)
+	{	// for predicate abstraction
+		abstraction.predicateAbstraction(this->getPredicates());
+	}
+	else
+	{	// for finite height abstraction
+
+		// the roots that will be excluded from abstraction
+		std::vector<bool> excludedRoots(fae.getRootCount(), false);
+		for (size_t i = 0; i < FIXED_REG_COUNT; ++i)
+		{
+			excludedRoots[VirtualMachine(fae).varGet(i).d_ref.root] = true;
+		}
+
+		for (size_t i = 0; i < fae.getRootCount(); ++i)
+		{
+			if (!excludedRoots[i])
+			{
+				abstraction.heightAbstraction(i, FA_ABS_HEIGHT, SmartTMatchF());
+//				abstraction.heightAbstraction(i, FA_ABS_HEIGHT, SmarterTMatchF(fae));
+			}
+		}
+	}
+
+	FA_DEBUG_AT(3, "after abstraction: " << std::endl << fae);
+}
+
+
+// FI_abs
+void FI_abs::execute(ExecutionManager& execMan, SymState& state)
+{
+	std::shared_ptr<FAE> fae = std::shared_ptr<FAE>(new FAE(*(state.GetFAE())));
 
 	fae->updateConnectionGraph();
 
 	std::set<size_t> forbidden;
 #if FA_ALLOW_FOLDING
-	reorder(state.GetMem(), *fae);
+	// reorder components into the canonical form (no merging!)
+	reorder(&state, *fae);
 
-	if (boxMan_.boxDatabase().size())
-	{
+	if (!boxMan_.boxDatabase().empty())
+	{	// in the case there are some boxes, try to fold immediately before
+		// normalization
 		for (size_t i = 0; i < FIXED_REG_COUNT; ++i)
 		{
 			forbidden.insert(VirtualMachine(*fae).varGet(i).d_ref.root);
 		}
 
+		// fold already discovered boxes
 		fold(*fae, boxMan_, forbidden);
-
-		forbidden.clear();
 	}
 
 	learn2(*fae, boxMan_);
 #endif
-	computeForbiddenSet(forbidden, *fae);
+	forbidden = Normalization::computeForbiddenSet(*fae);
 
-	normalize(*fae, state.GetMem(), forbidden, true);
+	normalize(*fae, &state, forbidden, true);
 
-	abstract(*fae, fwdConf_, taBackend_, boxMan_);
+	abstract(*fae);
 #if FA_ALLOW_FOLDING
 	learn1(*fae, boxMan_);
 
@@ -467,12 +513,11 @@ void FI_abs::execute(ExecutionManager& execMan, const ExecState& state)
 
 		do
 		{
-			forbidden.clear();
-			computeForbiddenSet(forbidden, *fae);
+			forbidden = Normalization::computeForbiddenSet(*fae);
 
-			normalize(*fae, state.GetMem(), forbidden, true);
+			normalize(*fae, &state, forbidden, true);
 
-			abstract(*fae, fwdConf_, taBackend_, boxMan_);
+			abstract(*fae);
 
 			forbidden.clear();
 			for (size_t i = 0; i < FIXED_REG_COUNT; ++i)
@@ -491,25 +536,28 @@ void FI_abs::execute(ExecutionManager& execMan, const ExecState& state)
 	{
 		FA_DEBUG_AT(3, "hit");
 
-		execMan.pathFinished(state.GetMem());
+		execMan.pathFinished(&state);
 	} else
 	{
 		FA_DEBUG_AT_MSG(1, &this->insn()->loc, "extending fixpoint\n" << *fae);
 
-		execMan.enqueue(state.GetMem(), state.GetRegsShPtr(), fae, next_);
+		SymState* tmpState = execMan.createChildState(state, next_);
+		tmpState->SetFAE(fae);
+
+		execMan.enqueue(tmpState);
 	}
 }
 
 // FI_fix
-void FI_fix::execute(ExecutionManager& execMan, const ExecState& state)
+void FI_fix::execute(ExecutionManager& execMan, SymState& state)
 {
-	std::shared_ptr<FAE> fae = std::shared_ptr<FAE>(new FAE(*state.GetMem()->GetFAE()));
+	std::shared_ptr<FAE> fae = std::shared_ptr<FAE>(new FAE(*(state.GetFAE())));
 
 	fae->updateConnectionGraph();
 
 	std::set<size_t> forbidden;
 #if FA_ALLOW_FOLDING
-	reorder(state.GetMem(), *fae);
+	reorder(&state, *fae);
 
 	if (!boxMan_.boxDatabase().size())
 	{
@@ -519,13 +567,11 @@ void FI_fix::execute(ExecutionManager& execMan, const ExecState& state)
 		}
 
 		fold(*fae, boxMan_, forbidden);
-
-		forbidden.clear();
 	}
 #endif
-	computeForbiddenSet(forbidden, *fae);
+	forbidden = Normalization::computeForbiddenSet(*fae);
 
-	normalize(*fae, state.GetMem(), forbidden, true);
+	normalize(*fae, &state, forbidden, true);
 #if FA_ALLOW_FOLDING
 	if (boxMan_.boxDatabase().size())
 	{
@@ -538,11 +584,9 @@ void FI_fix::execute(ExecutionManager& execMan, const ExecState& state)
 
 		while (fold(*fae, boxMan_, forbidden))
 		{
-			forbidden.clear();
+			forbidden = Normalization::computeForbiddenSet(*fae);
 
-			computeForbiddenSet(forbidden, *fae);
-
-			normalize(*fae, state.GetMem(), forbidden, true);
+			normalize(*fae, &state, forbidden, true);
 
 			forbidden.clear();
 
@@ -558,11 +602,14 @@ void FI_fix::execute(ExecutionManager& execMan, const ExecState& state)
 	{
 		FA_DEBUG_AT(3, "hit");
 
-		execMan.pathFinished(state.GetMem());
+		execMan.pathFinished(&state);
 	} else
 	{
 		FA_DEBUG_AT_MSG(1, &this->insn()->loc, "extending fixpoint\n" << *fae);
 
-		execMan.enqueue(state.GetMem(), state.GetRegsShPtr(), fae, next_);
+		SymState* tmpState = execMan.createChildState(state, next_);
+		tmpState->SetFAE(fae);
+
+		execMan.enqueue(tmpState);
 	}
 }

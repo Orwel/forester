@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2010-2011 Kamil Dudka <kdudka@redhat.com>
+ * Copyright (C) 2010-2012 Kamil Dudka <kdudka@redhat.com>
  *
  * This file is part of predator.
  *
@@ -41,73 +41,158 @@
 #include <boost/foreach.hpp>
 
 // /////////////////////////////////////////////////////////////////////////////
-// implementation of plotHeap()
+// implementation of HeapCrawler
+class HeapCrawler {
+    public:
+        HeapCrawler(const SymHeap &sh, const bool digForward = true):
+            sh_(const_cast<SymHeap &>(sh)),
+            digForward_(digForward)
+        {
+        }
+
+        bool /* anyChange */ digObj(const TObjId);
+        bool /* anyChange */ digVal(const TValId);
+
+        const TObjSet objs() const { return objs_; }
+        const TValSet vals() const { return vals_; }
+
+    private:
+        void digFields(const TObjId of);
+        void operate();
+
+    private:
+        SymHeap                    &sh_;
+        WorkList<TValId>            wl_;
+        bool                        digForward_;
+        TObjSet                     objs_;
+        TValSet                     vals_;
+};
+
+void HeapCrawler::digFields(const TObjId obj)
+{
+    // traverse the outgoing has-value edges
+    FldList fields;
+    sh_.gatherLiveFields(fields, obj);
+    BOOST_FOREACH(const FldHandle &fld, fields)
+        wl_.schedule(fld.value());
+}
+
+void HeapCrawler::operate()
+{
+    TValId val;
+    while (wl_.next(val)) {
+        if (val <= VAL_NULL)
+            continue;
+
+        // insert the value itself
+        vals_.insert(val);
+        if (!isAnyDataArea(sh_.valTarget(val)))
+            // target is not an object
+            continue;
+
+        // insert the target object
+        const TObjId obj = sh_.objByAddr(val);
+        if (!insertOnce(objs_, obj))
+            // the outgoing has-value edges have already been traversed
+            continue;
+
+        if (digForward_)
+            this->digFields(obj);
+    }
+}
+
+bool /* anyChange */ HeapCrawler::digObj(const TObjId obj)
+{
+    if (!insertOnce(objs_, obj))
+        // the outgoing has-value edges have already been traversed
+        return false;
+
+    this->digFields(obj);
+    this->operate();
+    return true;
+}
+
+bool /* anyChange */ HeapCrawler::digVal(const TValId val)
+{
+    if (!wl_.schedule(val))
+        return false;
+
+    this->operate();
+    return true;
+}
+
+// /////////////////////////////////////////////////////////////////////////////
+// implementation of plotHeapCore()
 struct PlotData {
-    typedef std::map<TValId, FldList>                       TLiveFields;
+    typedef std::pair<TObjId, TOffset>                      TFieldKey;
+    typedef std::map<TFieldKey, FldList>                    TLiveFields;
     typedef std::pair<int /* ID */, TValId>                 TDangVal;
     typedef std::vector<TDangVal>                           TDangValues;
 
-    SymHeap                             &sh;
-    std::ostream                        &out;
+    SymHeap                            &sh;
+    std::ostream                       &out;
+    const TObjSet                      &objs;
+    const TValSet                      &values;
+    const TIdSet                       *pHighlight;
     int                                 last;
-    std::set<TObjId>                    objs;
-    TValSet                             values;
     TLiveFields                         liveFields;
+    TFldSet                             lonelyFields;
     TDangValues                         dangVals;
 
-    PlotData(const SymHeap &sh_, std::ostream &out_):
+    PlotData(
+            const SymHeap              &sh_,
+            std::ostream               &out_,
+            const TObjSet              &objs_,
+            const TValSet              &values_,
+            const TIdSet               *pHighlight_):
         sh(const_cast<SymHeap &>(sh_)),
         out(out_),
+        objs(objs_),
+        values(values_),
+        pHighlight(pHighlight_),
         last(0)
     {
     }
 };
 
-void dlSegJumpToBegIfNeeded(const SymHeap &sh, TValId *pRoot)
+template <typename TId>
+bool isHighlighted(const PlotData &plot, const TId id)
 {
-    const TValId root = *pRoot;
-    if (isDlSegPeer(sh, root))
-        *pRoot = dlSegPeer(sh, root);
+    const TIdSet *pSet = plot.pHighlight;
+    return pSet
+        && hasKey(pSet, static_cast<int>(id));
 }
+
+#define GEN_labelByCode(cst) case cst: return #cst
 
 #define SL_QUOTE(what) "\"" << what << "\""
 
-void digValues(PlotData &plot, const TValList &startingPoints, bool digForward)
+const char* labelByStorClass(const EStorageClass code)
 {
-    SymHeap &sh = plot.sh;
-
-    WorkList<TValId> todo;
-    BOOST_FOREACH(const TValId val, startingPoints)
-        if (0 < val)
-            todo.schedule(val);
-
-    TValId val;
-    while (todo.next(val)) {
-        // insert the value itself
-        plot.values.insert(val);
-        if (!isAnyDataArea(sh.valTarget(val)))
-            // target is not an object
-            continue;
-
-        // insert the target object
-        const TObjId obj = sh.objByAddr(val);
-        if (!insertOnce(plot.objs, obj))
-            // the outgoing has-value edges have already been traversed
-            continue;
-
-        if (!digForward)
-            continue;
-
-        // traverse the outgoing has-value edges
-        FldList liveFields;
-        sh.gatherLiveFields(liveFields, obj);
-        BOOST_FOREACH(const FldHandle &fld, liveFields) {
-            const TValId valInside = fld.value();
-            if (0 < valInside)
-                // schedule the value inside for processing
-                todo.schedule(valInside);
-        }
+    switch (code) {
+        GEN_labelByCode(SC_INVALID);
+        GEN_labelByCode(SC_UNKNOWN);
+        GEN_labelByCode(SC_STATIC);
+        GEN_labelByCode(SC_ON_HEAP);
+        GEN_labelByCode(SC_ON_STACK);
     }
+
+    CL_BREAK_IF("invalid call of labelByStorClass()");
+    return "";
+}
+
+const char* labelByTargetSpec(const ETargetSpecifier code)
+{
+    switch (code) {
+        GEN_labelByCode(TS_INVALID);
+        GEN_labelByCode(TS_REGION);
+        GEN_labelByCode(TS_FIRST);
+        GEN_labelByCode(TS_LAST);
+        GEN_labelByCode(TS_ALL);
+    }
+
+    CL_BREAK_IF("invalid call of labelByTargetSpec()");
+    return "";
 }
 
 inline const char* offPrefix(const TOffset off)
@@ -118,14 +203,6 @@ inline const char* offPrefix(const TOffset off)
 }
 
 #define SIGNED_OFF(off) offPrefix(off) << (off)
-
-inline void appendLabelIf(std::ostream &str, const char *label)
-{
-    if (!label)
-        return;
-
-    str << ", label=\"" << label << "\"";
-}
 
 void plotOffset(PlotData &plot, const TOffset off, const int from, const int to)
 {
@@ -194,9 +271,9 @@ bool digIcByOffset(
     return true;
 }
 
-void describeVar(PlotData &plot, const TValId rootAt)
+void describeVar(PlotData &plot, const TObjId obj)
 {
-    if (VAL_ADDR_OF_RET == rootAt) {
+    if (OBJ_RETURN == obj) {
         plot.out << "OBJ_RETURN";
         return;
     }
@@ -205,11 +282,10 @@ void describeVar(PlotData &plot, const TValId rootAt)
     TStorRef stor = sh.stor();
 
     // var lookup
-    const TObjId obj = sh.objByAddr(rootAt);
     const CVar cv = sh.cVarByObject(obj);
 
     // write identity of the var
-    plot.out << "CL" << varToString(stor, cv.uid) << " [root = #" << rootAt;
+    plot.out << "CL" << varToString(stor, cv.uid) << " [obj = #" << obj;
     if (1 < cv.inst)
         plot.out << ", inst = " << cv.inst;
     plot.out << "]";
@@ -258,19 +334,16 @@ void describeFieldPlacement(PlotData &plot, const FldHandle &fld, TObjType clt)
 void describeField(PlotData &plot, const FldHandle &fld, const bool lonely)
 {
     SymHeap &sh = plot.sh;
-
-    // check root
-    const TValId at = fld.placedAt();
-    const TValId root = sh.valRoot(at);
-    const EStorageClass code = sh.objStorClass(sh.objByAddr(at));
+    const TObjId obj = fld.obj();
+    const EStorageClass code = sh.objStorClass(obj);
 
     const char *tag = "";
     if (lonely && isProgramVar(code)) {
-        describeVar(plot, root);
+        describeVar(plot, obj);
         tag = "field";
     }
 
-    const TObjType cltRoot = sh.objEstimatedType(sh.objByAddr(root));
+    const TObjType cltRoot = sh.objEstimatedType(obj);
     if (cltRoot)
         describeFieldPlacement(plot, fld, cltRoot);
 
@@ -310,39 +383,31 @@ void printRawRange(
         str << ", alignment = " << rng.alignment << suffix;
 }
 
-void plotRootValue(PlotData &plot, const TValId val, const char *color)
+void plotRawObject(PlotData &plot, const TObjId obj, const char *color)
 {
     SymHeap &sh = plot.sh;
-    CL_BREAK_IF(sh.valOffset(val));
-    const TObjId obj = sh.objByAddr(val);
     const TSizeRange size = sh.objSize(obj);
-    const unsigned refCnt = sh.usedByCount(val);
 
-    const bool isValid = sh.isValid(sh.objByAddr(val));
+    const bool isValid = sh.isValid(obj);
     if (!isValid)
         color = "red";
 
-    // visualize the count of references as pen width
-    const float pw = static_cast<float>(1U + refCnt);
-    plot.out << "\t" << SL_QUOTE(val)
-        << " [shape=ellipse, penwidth=" << pw
+    plot.out << "\t" << SL_QUOTE(obj)
+        << " [shape=box"
         << ", color=" << color
         << ", fontcolor=" << color
         << ", label=\"";
 
+    if (!sh.isValid(obj))
+        plot.out << "[INVALID] ";
+
     const EStorageClass code = sh.objStorClass(obj);
     if (isProgramVar(code))
-        describeVar(plot, val);
+        describeVar(plot, obj);
     else
-        plot.out << "#" << val;
+        plot.out << "#" << obj;
 
-    if (!sh.isValid(obj))
-        plot.out << " [INVALID]";
-
-    if (OBJ_INVALID != obj)
-        plot.out << " [obj=#" << obj << "]";
-
-    plot.out << " [size = ";
+    plot.out << " [" << labelByStorClass(code) << ", size = ";
     printRawRange(plot.out, size, " B");
     plot.out << "]\"];\n";
 }
@@ -404,12 +469,7 @@ bool plotField(PlotData &plot, const FieldWrapper &fw, const bool lonely)
             break;
 
         case FC_PREV:
-#if !SYMPLOT_DEBUG_DLS
-            if (OK_DLS == sh.objKind(fld.obj()))
-                return false;
-#endif
-            // cppcheck-suppress unreachableCode
-            color = "gold";
+            color = "orange";
             break;
 
         case FC_DATA:
@@ -417,13 +477,16 @@ bool plotField(PlotData &plot, const FieldWrapper &fw, const bool lonely)
             props = ", style=dotted";
     }
 
-    // store address mapping for the live object
-    const TValId at = fld.placedAt();
-    plot.liveFields[at].push_back(fld);
+    // update filed lookup
+    const TObjId obj = fld.obj();
+    const PlotData::TFieldKey key(obj, fld.offset());
+    plot.liveFields[key].push_back(fld);
 
-    // cppcheck-suppress unreachableCode
+    int id = fld.fieldId();
+
     if (lonely) {
-        const TObjId obj = sh.objByAddr(at);
+        id = obj;
+
         const EStorageClass code = sh.objStorClass(obj);
         switch (code) {
             case SC_STATIC:
@@ -436,7 +499,7 @@ bool plotField(PlotData &plot, const FieldWrapper &fw, const bool lonely)
         }
     }
 
-    plot.out << "\t" << SL_QUOTE(fld.fieldId())
+    plot.out << "\t" << SL_QUOTE(id)
         << " [shape=box, color=" << color
         << ", fontcolor=" << color << props
         << ", label=\"";
@@ -450,13 +513,12 @@ bool plotField(PlotData &plot, const FieldWrapper &fw, const bool lonely)
     return true;
 }
 
-void plotUniformBlocks(PlotData &plot, const TValId root)
+void plotUniformBlocks(PlotData &plot, const TObjId obj)
 {
     SymHeap &sh = plot.sh;
 
-    // get all uniform blocks inside the given root
+    // get all uniform blocks inside the given object
     TUniBlockMap bMap;
-    const TObjId obj = sh.objByAddr(root);
     sh.gatherUniformBlocks(bMap, obj);
 
     // plot all uniform blocks
@@ -472,7 +534,7 @@ void plotUniformBlocks(PlotData &plot, const TValId root)
         // plot offset edge
         const TOffset off = bl.off;
         CL_BREAK_IF(off < 0);
-        plot.out << "\t" << SL_QUOTE(root)
+        plot.out << "\t" << SL_QUOTE(obj)
             << " -> " << SL_QUOTE("lonely" << id)
             << " [color=black, fontcolor=black, label=\"[+"
             << off << "]\"];\n";
@@ -484,10 +546,9 @@ void plotUniformBlocks(PlotData &plot, const TValId root)
 }
 
 template <class TCont>
-void plotFields(PlotData &plot, const TValId at, const TCont &liveFields)
+void plotFields(PlotData &plot, const TObjId obj, const TCont &liveFields)
 {
     SymHeap &sh = plot.sh;
-    const TObjId obj = sh.objByAddr(at);
 
     FldHandle next;
     FldHandle prev;
@@ -500,12 +561,12 @@ void plotFields(PlotData &plot, const TValId at, const TCont &liveFields)
 
         case OK_DLS:
         case OK_SEE_THROUGH_2N:
-            prev = prevPtrFromSeg(sh, at);
+            prev = prevPtrFromSeg(sh, obj);
             // fall through!
 
         case OK_SEE_THROUGH:
         case OK_SLS:
-            next = nextPtrFromSeg(sh, at);
+            next = nextPtrFromSeg(sh, obj);
     }
 
     // sort objects by offset
@@ -536,8 +597,8 @@ void plotFields(PlotData &plot, const TValId at, const TCont &liveFields)
             if (!plotField(plot, fw, /* lonely */ false))
                 continue;
 
-            // connect the inner object with the root by an offset edge
-            plotOffset(plot, off, at, fw.fld.fieldId());
+            // connect the field with the object by an offset edge
+            plotOffset(plot, off, obj, fw.fld.fieldId());
         }
     }
 }
@@ -617,6 +678,11 @@ void plotCompositeObj(PlotData &plot, const TObjId obj, const TCont &liveFields)
 
     const EStorageClass code = sh.objStorClass(obj);
     switch (code) {
+        case SC_INVALID:
+        case SC_UNKNOWN:
+            color = "red";
+            break;
+
         case SC_STATIC:
         case SC_ON_STACK:
             color = "blue";
@@ -624,10 +690,6 @@ void plotCompositeObj(PlotData &plot, const TObjId obj, const TCont &liveFields)
 
         case SC_ON_HEAP:
             break;
-
-        default:
-            CL_BREAK_IF("unhandled storage class in plotCompositeObj()");
-            return;
     }
 
     const EObjKind kind = sh.objKind(obj);
@@ -638,7 +700,7 @@ void plotCompositeObj(PlotData &plot, const TObjId obj, const TCont &liveFields)
         case OK_OBJ_OR_NULL:
         case OK_SEE_THROUGH:
         case OK_SEE_THROUGH_2N:
-            color = "green";
+            color = "chartreuse2";
             pw = "3.0";
             break;
 
@@ -648,10 +710,14 @@ void plotCompositeObj(PlotData &plot, const TObjId obj, const TCont &liveFields)
             break;
 
         case OK_DLS:
-            color = "gold";
+            color = "orange";
             pw = "3.0";
             break;
     }
+
+    const char *bgColor = (isHighlighted(plot, obj))
+        ? "azure2"
+        : "white";
 
     const std::string label = labelOfCompObj(sh, obj, /* showProps */ true);
 
@@ -661,49 +727,23 @@ void plotCompositeObj(PlotData &plot, const TObjId obj, const TCont &liveFields)
         << "\" {\n\trank=same;\n\tlabel=" << SL_QUOTE(label)
         << ";\n\tcolor=" << color
         << ";\n\tfontcolor=" << color
-        << ";\n\tbgcolor=gray98;\n\tstyle=dashed;"
-        << "\n\tpenwidth=" << pw
-        << ";\n";
+        << ";\n\tbgcolor=" << bgColor
+        << ";\n\tpenwidth=" << pw
+        << ";\n\tstyle=dashed;\n";
 
-    const TValId at = sh.legacyAddrOfAny_XXX(obj);
-
-    // plot the root value
-    plotRootValue(plot, at, color);
+    plotRawObject(plot, obj, color);
 
     // plot all uniform blocks
-    plotUniformBlocks(plot, at);
+    plotUniformBlocks(plot, obj);
 
     // plot all atomic objects inside
-    plotFields(plot, at, liveFields);
-
-    // in case of DLS, plot the corresponding peer
-    TValId peer;
-    if (OK_DLS == sh.objKind(sh.objByAddr(at))
-            && OK_DLS == sh.objKind(sh.objByAddr((peer = dlSegPeer(sh, at)))))
-    {
-        // plot peer's root value
-        plotRootValue(plot, peer, color);
-#if !SYMPLOT_DEBUG_DLS
-        // plot peer's uniform blocks
-        plotUniformBlocks(plot, at);
-#endif
-
-#if SYMPLOT_DEBUG_DLS
-        FldList peerFields;
-        sh.gatherLiveFields(peerFields, peer);
-#else
-        TFldSet peerFields;
-        buildIgnoreList(peerFields, sh, peer);
-#endif
-        // plot all atomic objects inside
-        plotFields(plot, peer, peerFields);
-    }
+    plotFields(plot, obj, liveFields);
 
     // close cluster
     plot.out << "}\n";
 }
 
-bool plotSimpleRoot(PlotData &plot, const FldHandle &fld)
+bool plotLonelyField(PlotData &plot, const FldHandle &fld)
 {
     SymHeap &sh = plot.sh;
 
@@ -711,14 +751,12 @@ bool plotSimpleRoot(PlotData &plot, const FldHandle &fld)
         // offset detected
         return false;
 
-    const TValId at = fld.placedAt();
-    const TValId root = sh.valRoot(at);
-    if (sh.usedByCount(root))
-        // root pointed
+    const TObjId obj = fld.obj();
+    if (sh.pointedByCount(obj))
+        // object pointed
         return false;
 
     // TODO: support for objects with variable size?
-    const TObjId obj = sh.objByAddr(at);
     const TSizeRange size = sh.objSize(obj);
     CL_BREAK_IF(!isSingular(size));
 
@@ -727,6 +765,8 @@ bool plotSimpleRoot(PlotData &plot, const FldHandle &fld)
     if (clt->size != size.lo)
         // size mismatch detected
         return false;
+
+    plot.lonelyFields.insert(fld);
 
     const FieldWrapper fw(fld);
     plotField(plot, fw, /* lonely */ true);
@@ -739,25 +779,19 @@ void plotObjects(PlotData &plot)
 
     // go through roots
     BOOST_FOREACH(const TObjId obj, plot.objs) {
-        if (isDlSegPeer(plot.sh, obj))
-            // DLS peers are never plotted directly at this level
-            continue;
-
         // gather live objects
         FldList liveFields;
         sh.gatherLiveFields(liveFields, obj);
 
         if (OK_REGION == sh.objKind(obj)
                 && (1 == liveFields.size())
-                && plotSimpleRoot(plot, liveFields.front()))
+                && plotLonelyField(plot, liveFields.front()))
             // this one went out in a simplified form
             continue;
 
         plotCompositeObj(plot, obj, liveFields);
     }
 }
-
-#define GEN_labelByCode(cst) case cst: return #cst
 
 const char* labelByOrigin(const EValueOrigin code)
 {
@@ -822,7 +856,7 @@ void describeFnc(PlotData &plot, const int uid, const TValId val)
     CL_BREAK_IF(!fnc);
 
     const std::string name = nameOf(*fnc);
-    plot.out << ", fontcolor=green, label=\""
+    plot.out << ", fontcolor=chartreuse2, label=\""
         << name << "() (#"
         << val << ")\"";
 }
@@ -872,8 +906,7 @@ void describeCustomValue(PlotData &plot, const TValId val)
 void plotCustomValue(
         PlotData                       &plot,
         const int                       idFrom,
-        const TValId                    val,
-        const char                     *edgeLabel)
+        const TValId                    val)
 {
     const int id = ++plot.last;
     plot.out << "\t" << SL_QUOTE("lonely" << id) << " [shape=plaintext";
@@ -883,12 +916,11 @@ void plotCustomValue(
     plot.out << "];\n\t"
         << SL_QUOTE(idFrom)
         << " -> " << SL_QUOTE("lonely" << id)
-        << " [color=blue, fontcolor=blue";
-    appendLabelIf(plot.out, edgeLabel);
-    plot.out << "];\n";
+        << " [color=blue, fontcolor=blue"
+        << "];\n";
 }
 
-void plotValue(PlotData &plot, const TValId val)
+void plotSingleValue(PlotData &plot, const TValId val)
 {
     SymHeap &sh = plot.sh;
 
@@ -931,14 +963,15 @@ void plotValue(PlotData &plot, const TValId val)
             break;
 
         case SC_ON_HEAP:
-            if (isAbstractValue(sh, val))
-                color = "green";
-
             goto preserve_suffix;
     }
 
     suffix = labelByTarget(code);
 preserve_suffix:
+
+    const ETargetSpecifier ts = sh.targetSpec(val);
+    if (TS_REGION != ts)
+        color = "chartreuse2";
 
     const float pw = static_cast<float>(1U + sh.usedByCount(val));
     plot.out << "\t" << SL_QUOTE(val)
@@ -949,22 +982,16 @@ preserve_suffix:
     if (suffix)
         plot.out << " " << suffix;
 
-    const TValId root = sh.valRoot(val);
-
-    if (VT_RANGE == code) {
+    if (isAnyDataArea(code)) {
         const IR::Range &offRange = sh.valOffsetRange(val);
-        plot.out << " [root = #" << root
-            << ", off = " << offRange.lo << ".." << offRange.hi;
+        plot.out << " [off = ";
+        printRawRange(plot.out, offRange);
 
-        if (isAligned(offRange))
-            plot.out << ", alignment = " << offRange.alignment;
-    
-        plot.out << "]";
-    }
-    else {
-        const TOffset off = sh.valOffset(val);
-        if (off)
-            plot.out << " [root = #" << root << ", off = " << off << "]";
+        const ETargetSpecifier ts = sh.targetSpec(val);
+        if (TS_REGION != ts)
+            plot.out << ", " << labelByTargetSpec(ts);
+
+        plot.out << ", obj = #" << obj << "]";
     }
 
     plot.out << "\"];\n";
@@ -974,58 +1001,52 @@ void plotPointsTo(PlotData &plot, const TValId val, const TFldId target)
 {
     plot.out << "\t" << SL_QUOTE(val)
         << " -> " << SL_QUOTE(target)
-        << " [color=green, fontcolor=green];\n";
+        << " [color=chartreuse2, fontcolor=chartreuse2];\n";
 }
 
-void plotRangePtr(PlotData &plot, TValId val, TValId root, const IR::Range &rng)
+void plotRangePtr(PlotData &plot, TValId val, TObjId obj)
 {
     plot.out << "\t" << SL_QUOTE(val) << " -> "
-        << SL_QUOTE(root)
-        << " [color=red, fontcolor=red, label=\"[";
-
-    printRawRange(plot.out, rng);
-    
-    plot.out << "]\"];\n";
+        << SL_QUOTE(obj)
+        << " [color=red, fontcolor=red];\n";
 }
 
-void plotNonRootValues(PlotData &plot)
+void plotAddrs(PlotData &plot)
 {
     SymHeap &sh = plot.sh;
 
-    // go through non-roots
     BOOST_FOREACH(const TValId val, plot.values) {
-        if (hasKey(plot.objs, sh.objByAddr(val)) && sh.valRoot(val) == val)
-            continue;
-
         // plot a value node
-        plotValue(plot, val);
+        plotSingleValue(plot, val);
 
-        const TValId root = sh.valRoot(val);
+        const TObjId obj = sh.objByAddr(val);
+
         const EValueTarget code = sh.valTarget(val);
-        if (VT_RANGE == code) {
-            const IR::Range &rng = sh.valOffsetRange(val);
-            plotRangePtr(plot, val, root, rng);
-            continue;
-        }
-        else if (!isAnyDataArea(sh.valTarget(val)))
-            // no valid target
-            continue;
+        switch (code) {
+            case VT_OBJECT:
+                break;
 
-        TValId offEdgeRoot = root;
+            case VT_RANGE:
+                plotRangePtr(plot, val, obj);
+                continue;
 
-        // assume an off-value
-        PlotData::TLiveFields::const_iterator it = plot.liveFields.find(val);
-        if ((plot.liveFields.end() != it) && (1 == it->second.size())) {
-            // exactly one target
-            const FldHandle &target = it->second.front();
-            plotPointsTo(plot, val, target.fieldId());
-            continue;
+            default:
+                continue;
         }
 
-        // an off-value with either no target, or too many targets
         const TOffset off = sh.valOffset(val);
-        CL_BREAK_IF(!off);
-        plotOffset(plot, off, offEdgeRoot, val);
+        if (off) {
+            const PlotData::TFieldKey key(obj, off);
+            PlotData::TLiveFields::const_iterator it = plot.liveFields.find(key);
+            if ((plot.liveFields.end() != it) && (1 == it->second.size())) {
+                // plot the target field as an abbreviation
+                const FldHandle &target = it->second.front();
+                plotPointsTo(plot, val, target.fieldId());
+                continue;
+            }
+        }
+
+        plotOffset(plot, off, val, obj);
     }
 
     // go through value prototypes used in uniform blocks
@@ -1036,7 +1057,7 @@ void plotNonRootValues(PlotData &plot)
 
         // plot a value node
         CL_BREAK_IF(isAnyDataArea(sh.valTarget(val)));
-        plotValue(plot, val);
+        plotSingleValue(plot, val);
     }
 }
 
@@ -1067,25 +1088,21 @@ void plotAuxValue(
         PlotData                       &plot,
         const int                       node,
         const TValId                    val,
-        const bool                      isObj,
-        const char                     *edgeLabel = 0)
+        const bool                      isField,
+        const bool                      isLonely = false)
 {
     const char *color = "blue";
     const char *label = "NULL";
 
     switch (val) {
         case VAL_NULL:
-            if (isObj)
+            if (isField)
                 label = valNullLabel(plot.sh, static_cast<TFldId>(node));
             break;
 
         case VAL_TRUE:
-            color = "gold";
+            color = "orange";
             label = "TRUE";
-            break;
-
-        case VAL_ADDR_OF_RET:
-            label = "ADDR_OF_RET";
             break;
 
         case VAL_INVALID:
@@ -1100,44 +1117,40 @@ void plotAuxValue(
         << ", label=" << SL_QUOTE(label) << "];\n";
 
     const char *prefix = "";
-    if (edgeLabel)
-        prefix = "fld";
-    else if (!isObj)
+    if (isLonely)
         prefix = "lonely";
 
     plot.out << "\t" << SL_QUOTE(prefix << node)
         << " -> " << SL_QUOTE("lonely" << id)
-        << " [color=blue, fontcolor=blue";
-    appendLabelIf(plot.out, edgeLabel);
-    plot.out << "];\n";
+        << " [color=blue, fontcolor=blue];\n";
 }
 
 void plotHasValue(
         PlotData                       &plot,
-        const int                       idFrom,
-        const TValId                    val,
-        const bool                      isObj = true,
-        const char                     *edgeLabel = 0)
+        const FldHandle                &fld)
 {
     SymHeap &sh = plot.sh;
+    const TValId val = fld.value();
+    const bool isField = !hasKey(plot.lonelyFields, fld);
+    const int idFrom = (isField)
+        ? static_cast<int>(fld.fieldId())
+        : static_cast<int>(fld.obj());
 
     if (val <= 0) {
-        plotAuxValue(plot, idFrom, val, isObj, edgeLabel);
+        plotAuxValue(plot, idFrom, val, isField);
         return;
     }
 
     const EValueTarget code = sh.valTarget(val);
     if (VT_CUSTOM == code) {
-        plotCustomValue(plot, idFrom, val, edgeLabel);
+        plotCustomValue(plot, idFrom, val);
         return;
     }
 
     plot.out << "\t"
         << SL_QUOTE(idFrom)
         << " -> " << SL_QUOTE(val)
-        << " [color=blue, fontcolor=blue";
-    appendLabelIf(plot.out, edgeLabel);
-    plot.out << "];\n";
+        << " [color=blue, fontcolor=blue];\n";
 }
 
 void plotNeqZero(PlotData &plot, const TValId val)
@@ -1148,7 +1161,7 @@ void plotNeqZero(PlotData &plot, const TValId val)
 
     plot.out << "\t" << SL_QUOTE(val)
         << " -> " << SL_QUOTE("lonely" << id)
-        << " [color=red, fontcolor=gold, label=neq style=dashed"
+        << " [color=red, fontcolor=orange, label=neq style=dashed"
         ", penwidth=2.0];\n";
 }
 
@@ -1162,7 +1175,7 @@ void plotNeqCustom(PlotData &plot, const TValId val, const TValId valCustom)
 
     plot.out << "];\n\t" << SL_QUOTE(val)
         << " -> " << SL_QUOTE("lonely" << id)
-        << " [color=red, fontcolor=gold, label=neq style=dashed"
+        << " [color=red, fontcolor=orange, label=neq style=dashed"
         ", penwidth=2.0];\n";
 }
 
@@ -1171,7 +1184,7 @@ void plotNeq(std::ostream &out, const TValId v1, const TValId v2)
     out << "\t" << SL_QUOTE(v1)
         << " -> " << SL_QUOTE(v2)
         << " [color=red, style=dashed, penwidth=2.0, arrowhead=none"
-        ", label=neq, fontcolor=gold, constraint=false];\n";
+        ", label=neq, fontcolor=orange, constraint=false];\n";
 }
 
 class NeqPlotter: public SymPairSet<TValId, /* IREFLEXIVE */ true> {
@@ -1195,7 +1208,6 @@ class NeqPlotter: public SymPairSet<TValId, /* IREFLEXIVE */ true> {
 
 void plotNeqEdges(PlotData &plot)
 {
-    // cppcheck-suppress unreachableCode
     SymHeap &sh = plot.sh;
 
     // gather relevant "neq" edges
@@ -1220,7 +1232,7 @@ void plotHasValueEdges(PlotData &plot)
     // plot "hasValue" edges
     BOOST_FOREACH(PlotData::TLiveFields::const_reference item, plot.liveFields)
         BOOST_FOREACH(const FldHandle &fld, /* FldList */ item.second)
-            plotHasValue(plot, fld.fieldId(), fld.value());
+            plotHasValue(plot, fld);
 
     // plot "hasValue" edges for uniform block prototypes
     BOOST_FOREACH(PlotData::TDangValues::const_reference item, plot.dangVals) {
@@ -1228,7 +1240,7 @@ void plotHasValueEdges(PlotData &plot)
         const TValId val = item.second;
 
         if (val <= 0) {
-            plotAuxValue(plot, id, val, /* isObj */ false);
+            plotAuxValue(plot, id, val, /* isField */ false, /* lonely */ true);
             continue;
         }
 
@@ -1241,21 +1253,27 @@ void plotHasValueEdges(PlotData &plot)
 void plotEverything(PlotData &plot)
 {
     plotObjects(plot);
-    plotNonRootValues(plot);
+    plotAddrs(plot);
     plotHasValueEdges(plot);
     plotNeqEdges(plot);
 }
 
-bool plotHeap(
+bool plotHeapCore(
         const SymHeap                   &sh,
         const std::string               &name,
         const struct cl_loc             *loc,
-        const TValList                  &startingPoints,
-        const bool                      digForward)
+        const TObjSet                   &objs,
+        const TValSet                   &vals,
+        std::string                     *pName = 0,
+        const TIdSet                    *pHighlight = 0)
 {
     PlotEnumerator *pe = PlotEnumerator::instance();
     std::string plotName(pe->decorate(name));
     std::string fileName(plotName + ".dot");
+
+    if (pName)
+        // propagate the resulting name back to the caller
+        *pName = plotName;
 
     // create a dot file
     std::fstream out(fileName.c_str(), std::ios::out);
@@ -1282,10 +1300,9 @@ bool plotHeap(
         CL_DEBUG("writing heap graph to '" << fileName << "'...");
 
     // initialize an instance of PlotData
-    PlotData plot(sh, out);
+    PlotData plot(sh, out, objs, vals, pHighlight);
 
     // do our stuff
-    digValues(plot, startingPoints, digForward);
     plotEverything(plot);
 
     // close graph
@@ -1295,18 +1312,52 @@ bool plotHeap(
     return ok;
 }
 
+// /////////////////////////////////////////////////////////////////////////////
+// implementation of plotHeap()
 bool plotHeap(
         const SymHeap                   &sh,
         const std::string               &name,
-        const struct cl_loc             *loc)
+        const struct cl_loc             *loc,
+        const TValList                  &startingPoints)
 {
+    HeapCrawler crawler(sh);
+
+    BOOST_FOREACH(const TValId val, startingPoints)
+        crawler.digVal(val);
+
+    return plotHeapCore(sh, name, loc, crawler.objs(), crawler.vals());
+}
+
+bool plotHeap(
+        const SymHeap                   &sh,
+        const std::string               &name,
+        const struct cl_loc             *loc,
+        std::string                     *pName,
+        const TIdSet                    *pHighlight)
+{
+    HeapCrawler crawler(sh);
+
     TObjList allObjs;
     sh.gatherObjects(allObjs);
-
-    // TODO: drop this!
-    TValList roots;
     BOOST_FOREACH(const TObjId obj, allObjs)
-        roots.push_back(sh.legacyAddrOfAny_XXX(obj));
+        crawler.digObj(obj);
 
-    return plotHeap(sh, name, loc, roots);
+    const TObjSet objs = crawler.objs();
+    const TValSet vals = crawler.vals();
+
+    return plotHeapCore(sh, name, loc, objs, vals, pName, pHighlight);
+}
+
+bool plotHeap(
+        const SymHeap                   &sh,
+        const std::string               &name,
+        const struct cl_loc             *loc,
+        const TObjSet                   &objs)
+{
+    HeapCrawler crawler(sh, /* digForward */ false);
+
+    BOOST_FOREACH(const TObjId obj, objs)
+        crawler.digObj(obj);
+
+    return plotHeapCore(sh, name, loc, crawler.objs(), crawler.vals());
 }

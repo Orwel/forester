@@ -28,6 +28,7 @@
 #include "forestautext.hh"
 #include "abstractbox.hh"
 #include "streams.hh"
+#include "symstate.hh"
 #include "utils.hh"
 
 class Normalization
@@ -36,305 +37,114 @@ private:  // data members
 
 	FAE& fae;
 
-	// the corresponding symbolic state
+	/// the corresponding symbolic state
 	const SymState* state_;
 
 protected:
 
-	TreeAut* mergeRoot(TreeAut& dst, size_t ref, TreeAut& src, std::vector<size_t>& joinStates) {
-		assert(ref < this->fae.roots.size());
-		TreeAut* ta = this->fae.allocTA();
-		ta->addFinalStates(dst.getFinalStates());
-		size_t refState = _MSB_ADD(this->fae.boxMan->getDataId(Data::createRef(ref)));
-		std::unordered_map<size_t, size_t> joinStatesMap;
-		for (std::set<size_t>::const_iterator i = src.getFinalStates().begin(); i != src.getFinalStates().end(); ++i) {
-			joinStates.push_back(this->fae.nextState());
-			joinStatesMap.insert(std::make_pair(*i, this->fae.freshState()));
-		}
-		bool hit = false;
-		for (TreeAut::iterator i = dst.begin(); i != dst.end(); ++i) {
-			std::vector<size_t> tmp = i->lhs();
-			std::vector<size_t>::iterator j = std::find(tmp.begin(), tmp.end(), refState);
-			if (j != tmp.end()) {
-				for (std::vector<size_t>::iterator k = joinStates.begin(); k != joinStates.end(); ++k) {
-					*j = *k;
-					ta->addTransition(tmp, i->label(), i->rhs());
-				}
-				hit = true;
-			} else ta->addTransition(*i);
-		}
-//		std::cerr << joinState << std::endl;
-		if (!hit) {assert(false);}
-		// avoid screwing up things
-		src.unfoldAtRoot(*ta, joinStatesMap, false);
-		return ta;
-	}
+	TreeAut* mergeRoot(
+		TreeAut&                          dst,
+		size_t                            ref,
+		TreeAut&                          src,
+		std::vector<size_t>&              joinStates);
 
-	void traverse(std::vector<bool>& visited, std::vector<size_t>& order, std::vector<bool>& marked) const {
 
-		visited = std::vector<bool>(this->fae.roots.size(), false);
-		marked = std::vector<bool>(this->fae.roots.size(), false);
+	void traverse(
+		std::vector<bool>&                visited,
+		std::vector<size_t>&              order,
+		std::vector<bool>&                marked) const;
 
-		order.clear();
 
-		for (const Data& var : this->fae.GetVariables()) {
+	/**
+	 * @brief  Traverse the forest automaton and mark visited components
+	 *
+	 * This method traverses the forest automaton and marks visited components
+	 * in the passed bitmap.
+	 *
+	 * @param[out]  visited  Bitmap into which visited components are marked
+	 */
+	void traverse(
+		std::vector<bool>&                visited) const;
 
-			// skip everything what is not a root reference
-			if (!var.isRef())
-				continue;
 
-			size_t root = var.d_ref.root;
+	void checkGarbage(
+		const std::vector<bool>&          visited) const;
 
-			// mark rootpoint pointed by a variable
-			marked[root] = true;
 
-			// check whether we traversed this one before
-			if (visited[root])
-				continue;
+	/**
+	 * @brief  Normalizes given root recursively
+	 *
+	 * This method performs recursively normalization of all components reachable
+	 * from given root. This only removes redundant root points (and preserves
+	 * only root points which are real cutpoints), reordering of roots is
+	 * performed on a higher level.
+	 *
+	 * @param[in,out]  normalized  Vector marking root points which are normalized
+	 * @param[in]      root        The root to be normalized
+	 * @param[in]      marked      Bitmap telling which root points are referenced
+	 *                             more than once
+	 */
+	void normalizeRoot(
+		std::vector<bool>&                normalized,
+		size_t                            root,
+		const std::vector<bool>&          marked);
 
-			this->fae.connectionGraph.visit(root, visited, order, marked);
-
-		}
-
-	}
-
-	void traverse(std::vector<bool>& visited) const {
-
-		visited = std::vector<bool>(this->fae.roots.size(), false);
-
-		for (const Data& var : this->fae.GetVariables()) {
-
-			// skip everything what is not a root reference
-			if (!var.isRef())
-				continue;
-
-			size_t root = var.d_ref.root;
-
-			// check whether we traversed this one before
-			if (visited[root])
-				continue;
-
-			this->fae.connectionGraph.visit(root, visited);
-
-		}
-
-	}
-
-	void checkGarbage(const std::vector<bool>& visited) const {
-
-		bool garbage = false;
-
-		for (size_t i = 0; i < this->fae.roots.size(); ++i) {
-
-			if (!this->fae.roots[i])
-				continue;
-
-			if (!visited[i]) {
-
-				FA_DEBUG_AT(1, "the root " << i << " is not referenced anymore ... " << this->fae.connectionGraph.data[i]);
-
-				garbage = true;
-
-			}
-
-		}
-
-		if (garbage)
-		{
-			const cl_loc* loc = nullptr;
-			if (nullptr != state_ &&
-				nullptr != state_->GetInstr() &&
-				nullptr != state_->GetInstr()->insn())
-			{
-				loc = &state_->GetInstr()->insn()->loc;
-			}
-
-			throw ProgramError("garbage detected", loc, state_);
-		}
-	}
 
 public:
 
-	// check garbage
-	void check() const {
 
-		// compute reachable roots
-		std::vector<bool> visited(this->fae.roots.size(), false);
+	/**
+	 * @brief  Checks for garbage
+	 *
+	 * Checks for garbage, i.e. components unreachable from program variables.
+	 *
+	 * @todo  This method fails for backward-only reachable components
+	 */
+	void check() const;
 
-		this->traverse(visited);
 
-		// check garbage
-		this->checkGarbage(visited);
+	bool selfReachable(
+		size_t                            root,
+		size_t                            self,
+		const std::vector<bool>&          marked);
 
-	}
 
-	void normalizeRoot(std::vector<bool>& normalized, size_t root, const std::vector<bool>& marked) {
+	void scan(
+		std::vector<bool>&                marked,
+		std::vector<size_t>&              order,
+		const std::set<size_t>&           forbidden = std::set<size_t>(),
+		bool                              extended = false);
 
-		if (normalized[root])
-			return;
 
-		normalized[root] = true;
-
-		// we need a copy here!
-		auto signature = this->fae.connectionGraph.data[root].signature;
-
-		for (auto& cutpoint : signature) {
-
-			this->normalizeRoot(normalized, cutpoint.root, marked);
-
-			if (marked[cutpoint.root])
-				continue;
-
-			assert(root != cutpoint.root);
-
-			std::vector<size_t> refStates;
-
-			TreeAut* ta = this->mergeRoot(
-				*this->fae.roots[root],
-				cutpoint.root,
-				*this->fae.roots[cutpoint.root],
-				refStates
-			);
-
-			this->fae.roots[root] = std::shared_ptr<TreeAut>(ta);
-			this->fae.roots[cutpoint.root] = nullptr;
-
-			this->fae.connectionGraph.mergeCutpoint(root, cutpoint.root);
-
-		}
-
-	}
-
-	bool selfReachable(size_t root, size_t self, const std::vector<bool>& marked) {
-
-		for (auto& cutpoint : this->fae.connectionGraph.data[root].signature) {
-
-			if (cutpoint.root == self)
-				return true;
-
-			if (marked[cutpoint.root])
-				continue;
-
-			if (this->selfReachable(cutpoint.root, self, marked))
-				return true;
-
-		}
-
-		return false;
-
-	}
-
-	void scan(std::vector<bool>& marked, std::vector<size_t>& order, const std::set<size_t>& forbidden = std::set<size_t>(), bool extended = false) {
-
-		assert(this->fae.connectionGraph.isValid());
-
-		std::vector<bool> visited(this->fae.roots.size(), false);
-
-		marked = std::vector<bool>(this->fae.roots.size(), false);
-
-		order.clear();
-
-		// compute canonical root ordering
-		this->traverse(visited, order, marked);
-
-		// check garbage
-		this->checkGarbage(visited);
-
-		if (!extended) {
-
-			for (auto& x : forbidden)
-				marked[x] = true;
-
-			return;
-
-		}
-
-		for (auto& x : forbidden) {
-
-			marked[x] = true;
-
-			for (auto& cutpoint : this->fae.connectionGraph.data[x].signature) {
-
-				if ((cutpoint.root != x) && !this->selfReachable(cutpoint.root, x, marked))
-					continue;
-
-				marked[cutpoint.root] = true;
-
-				break;
-
-			}
-
-		}
-
-	}
-
-	// normalize representation
+	/**
+	 * @brief  Transforms the forest automaton into a canonicity-respecting form
+	 *
+	 * This method transforms the corresponding forest automaton into
+	 * a canonicity-respecting form. This means that root points correspond to
+	 * real cutpoints (other are merged) and the order of the root points is
+	 * according to the depth-first traversal.
+	 *
+	 * @param[in]  marked  Vector marking roots which are referred more than once
+	 * @param[in]  order   Vector with root indices in the right order
+	 *
+	 * @returns  @p true in case some components were merged, @p false otherwise
+	 */
 	bool normalize(
-		const std::vector<bool>&     marked,
-		const std::vector<size_t>&   order)
-	{
-		bool merged = false;
+		const std::vector<bool>&          marked,
+		const std::vector<size_t>&        order);
 
-		size_t i;
 
-		for (i = 0; i < order.size(); ++i) {
-
-			if (!marked[i] || (order[i] != i))
-				break;
-
-		}
-
-		if (i == order.size()) {
-
-			this->fae.roots.resize(order.size());
-			this->fae.connectionGraph.data.resize(order.size());
-			return false;
-
-		}
-
-		// reindex roots
-		std::vector<size_t> index(this->fae.roots.size(), static_cast<size_t>(-1));
-		std::vector<bool> normalized(this->fae.roots.size(), false);
-		std::vector<std::shared_ptr<TreeAut>> newRoots;
-		size_t offset = 0;
-
-		for (auto& i : order) {
-
-			this->normalizeRoot(normalized, i, marked);
-//			assert(marked[*i] || (this->fae.roots[*i] == nullptr));
-
-			if (!marked[i]) {
-
-				merged = true;
-
-				continue;
-
-			}
-
-			newRoots.push_back(this->fae.roots[i]);
-
-			index[i] = offset++;
-
-		}
-
-		// update representation
-		std::swap(this->fae.roots, newRoots);
-
-		for (size_t i = 0; i < this->fae.roots.size(); ++i) {
-
-			this->fae.roots[i] = std::shared_ptr<TreeAut>(
-				this->fae.relabelReferences(this->fae.roots[i].get(), index)
-			);
-
-		}
-
-		this->fae.connectionGraph.finishNormalization(this->fae.roots.size(), index);
-
-		// update variables
-		this->fae.UpdateVarsRootRefs(index);
-
-		return merged;
-	}
+	/**
+	 * @brief  Computes the indices of components which are not to be merged
+	 *
+	 * This function computes the set of indices of components of the forest
+	 * automaton @p fae which are not to be merged or folded
+	 *
+	 * @param[in]  fae  The forest automaton
+	 *
+	 * @returns  The set with indices of components not to be merged or folded
+	 */
+	static std::set<size_t> computeForbiddenSet(FAE& fae);
 
 public:   // methods
 

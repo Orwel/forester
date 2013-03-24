@@ -22,8 +22,12 @@
 
 #include "abstractinstruction.hh"
 
-class FI_ret : public AbstractInstruction {
-
+/**
+ * @brief  Performs a return from a function
+ */
+class FI_ret : public AbstractInstruction
+{
+	/// Index of the register with the return address
 	size_t dst_;
 
 public:
@@ -31,12 +35,17 @@ public:
 	FI_ret(const CodeStorage::Insn* insn, size_t dst)
 		: AbstractInstruction(insn), dst_(dst) {}
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
+
+	virtual SymState* reverseAndIsect(
+		ExecutionManager&                      execMan,
+		const SymState&                        fwdPred,
+		const SymState&                        bwdSucc) const;
 
 	virtual void finalize(
 		const std::unordered_map<const CodeStorage::Block*, AbstractInstruction*>&,
-		std::vector<AbstractInstruction*>::const_iterator
-	);
+		std::vector<AbstractInstruction*>::const_iterator)
+	{ }
 
 	virtual std::ostream& toStream(std::ostream& os) const {
 		return os << "ret   \tr" << this->dst_;

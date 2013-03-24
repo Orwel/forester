@@ -20,22 +20,30 @@
 #ifndef UNFOLDING_H
 #define UNFOLDING_H
 
+// Standard library headers
 #include <vector>
 #include <set>
 #include <stdexcept>
 #include <algorithm>
 
+// Forester headers
 #include "forestautext.hh"
 #include "abstractbox.hh"
 #include "utils.hh"
 
-class Unfolding {
-
+class Unfolding
+{
 	FAE& fae;
 
 protected:
 
-	void boxMerge(TreeAut& dst, const TreeAut& src, const TreeAut& boxRoot, const Box* box, const std::vector<size_t>& rootIndex) {
+	void boxMerge(
+		TreeAut&                       dst,
+		const TreeAut&                 src,
+		const TreeAut&                 boxRoot,
+		const Box*                     box,
+		const std::vector<size_t>&     rootIndex)
+	{
 		TreeAut tmp(*this->fae.backend), tmp2(*this->fae.backend);
 //		this->fae.boxMan->adjustLeaves(tmp2, boxRoot);
 		this->fae.relabelReferences(tmp, boxRoot, rootIndex);
@@ -43,19 +51,22 @@ protected:
 		src.copyTransitions(dst, TreeAut::NonAcceptingF(src));
 		tmp2.copyTransitions(dst, TreeAut::NonAcceptingF(tmp2));
 		dst.addFinalStates(tmp2.getFinalStates());
-		for (std::set<size_t>::const_iterator j = src.getFinalStates().begin(); j != src.getFinalStates().end(); ++j) {
-			for (TreeAut::iterator i = src.begin(*j); i != src.end(*j, i); ++i) {
+
+		for (size_t state : src.getFinalStates())
+		{
+			for (TreeAut::iterator i = src.begin(state); i != src.end(state, i); ++i)
+			{
 				std::vector<size_t> lhs;
 				std::vector<const AbstractBox*> label;
 				size_t lhsOffset = 0;
 				if (box) {
 					bool found = false;
-					for (std::vector<const AbstractBox*>::const_iterator j = i->label()->getNode().begin(); j != i->label()->getNode().end(); ++j) {
-						if (!(*j)->isStructural()) {
-							label.push_back(*j);
+					for (const AbstractBox* aBox : i->label()->getNode()) {
+						if (!aBox->isStructural()) {
+							label.push_back(aBox);
 							continue;
 						}
-						const StructuralBox* b = static_cast<const StructuralBox*>(*j);
+						const StructuralBox* b = static_cast<const StructuralBox*>(aBox);
 						if (b != static_cast<const StructuralBox*>(box)) {
 							// this box is not interesting
 							for (size_t k = 0; k < b->getArity(); ++k, ++lhsOffset)
@@ -92,49 +103,44 @@ protected:
 
 public:
 
-	void unfoldBox(size_t root, const Box* box) {
+	void unfoldBox(size_t root, const Box* box)
+	{
+		assert(root < this->fae.getRootCount());
+		assert(nullptr != this->fae.getRoot(root));
+		assert(nullptr != box);
 
-//		CL_CDEBUG(3, "unfolding " << *(AbstractBox*)box << " at root " << root << std::endl << this->fae);
-
-		assert(root < this->fae.roots.size());
-		assert(this->fae.roots[root]);
-		assert(box);
-
-		const TT<label_type>& t = this->fae.roots[root]->getAcceptingTransition();
+		const TT<label_type>& t = this->fae.getRoot(root)->getAcceptingTransition();
 
 		size_t lhsOffset = 0;
 		std::vector<size_t> index = { root };
 
-		for (std::vector<const AbstractBox*>::const_iterator i = t.label()->getNode().begin(); i != t.label()->getNode().end(); ++i) {
-
-			if (static_cast<const AbstractBox*>(box) != *i) {
-
-				lhsOffset += (*i)->getArity();
+		for (const AbstractBox* aBox : t.label()->getNode())
+		{
+			if (static_cast<const AbstractBox*>(box) != aBox)
+			{
+				lhsOffset += aBox->getArity();
 
 				continue;
-
 			}
 
-			for (size_t j = 0; j < box->getArity(); ++j) {
-
+			for (size_t j = 0; j < box->getArity(); ++j)
+			{
 				const Data& data = this->fae.getData(t.lhs()[lhsOffset + j]);
 
 				if (data.isUndef())
 					index.push_back(static_cast<size_t>(-1));
 				else
 					index.push_back(data.d_ref.root);
-
 			}
 
 			break;
-
 		}
 
 		auto ta = std::shared_ptr<TreeAut>(this->fae.allocTA());
 
-		this->boxMerge(*ta, *this->fae.roots[root], *box->getOutput(), box, index);
+		this->boxMerge(*ta, *this->fae.getRoot(root), *box->getOutput(), box, index);
 
-		this->fae.roots[root] = ta;
+		this->fae.setRoot(root, ta);
 		this->fae.connectionGraph.invalidate(root);
 
 		if (!box->getInput())
@@ -145,19 +151,18 @@ public:
 		size_t aux = index[box->getInputIndex() + 1];
 
 		assert(aux != static_cast<size_t>(-1));
-		assert(aux < this->fae.roots.size());
+		assert(aux < this->fae.getRootCount());
 
 		TreeAut tmp(*this->fae.backend);
 
-		this->fae.roots[aux]->unfoldAtRoot(tmp, this->fae.freshState());
-		this->fae.roots[aux] = std::shared_ptr<TreeAut>(this->fae.allocTA());
+		this->fae.getRoot(aux)->unfoldAtRoot(tmp, this->fae.freshState());
+		this->fae.setRoot(aux, std::shared_ptr<TreeAut>(this->fae.allocTA()));
 
-		this->boxMerge(*this->fae.roots[aux], tmp, *box->getInput(), nullptr, index);
+		this->boxMerge(*this->fae.getRoot(aux), tmp, *box->getInput(), nullptr, index);
 
 		this->fae.connectionGraph.invalidate(aux);
 
 //		this->fae.updateConnectionGraph();
-
 	}
 
 	void unfoldBoxes(size_t root, const std::set<const Box*>& boxes) {

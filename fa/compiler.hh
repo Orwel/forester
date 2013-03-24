@@ -139,16 +139,16 @@ public:
 
 
 		/**
-		 * @brief  Prints the code of the assembly
+		 * @brief  Prints the microcode of the assembly
 		 *
-		 * Prints the code of the assembly.
+		 * Prints the microcode of the assembly.
 		 *
 		 * @param[in,out]  os    The output stream
 		 * @param[in]      code  The code to be printed
 		 *
 		 * @returns  Modified output stream
 		 */
-		static std::ostream& printCode(
+		static std::ostream& printUcode(
 			std::ostream&         os,
 			const CodeList&       code)
 		{
@@ -171,13 +171,23 @@ public:
 					}
 				}
 
+				const CodeStorage::Insn* clInsn = instr->insn();
+
 				prev = instr;
 
-				os << std::setw(16);
+				os << std::setw(18);
 				if (instr->isTarget())
 				{
 					std::ostringstream addrStream;
-					addrStream << instr << ':';
+					addrStream << instr;
+
+					if ((nullptr != clInsn) && (clInsn != lastInsn)
+						&& (clInsn->bb->front() == clInsn))
+					{
+						addrStream << " (" << clInsn->bb->name() << ")";
+					}
+
+					addrStream << ":";
 
 					os << std::left << addrStream.str();
 				}
@@ -191,11 +201,11 @@ public:
 
 				os << std::setw(24) << std::left << instrStream.str();
 
-				if (instr->insn() && (instr->insn() != lastInsn))
+				if ((nullptr != clInsn) && (clInsn != lastInsn))
 				{
-					os << "; " << instr->insn()->loc << ' ' << *instr->insn();
+					os << "; " << clInsn->loc << ' ' << *clInsn;
 
-					lastInsn = instr->insn();
+					lastInsn = clInsn;
 				}
 
 				os << std::endl;
@@ -206,6 +216,68 @@ public:
 			return os << std::endl << "; code size: " << cnt << " instructions" << std::endl;
 		}
 
+
+		/**
+		 * @brief  Transforms an instruction into a string
+		 *
+		 * This method takes a CodeListener instruction and transforms it into a @e
+		 * nice string.
+		 *
+		 * @param[in]  clInsn  The CodeListener instruction to be transformed
+		 *
+		 * @returns  String with the instruction
+		 */
+		static std::string insnToString(const CodeStorage::Insn& clInsn)
+		{
+			std::ostringstream os;
+			os << std::setw(8);
+			if (clInsn.bb->front() == &clInsn)
+			{
+				std::ostringstream addrStream;
+				addrStream << clInsn.bb->name() << ":";
+
+				os << std::left << addrStream.str();
+			}
+			else
+			{
+				os << "";
+			}
+
+			os << clInsn;
+
+			return os.str();
+		}
+
+
+		/**
+		 * @brief  Prints the original code of the program
+		 *
+		 * Prints the original code of the program as stored in the assembly.
+		 *
+		 * @param[in,out]  os     The output stream
+		 * @param[in]      code   The code to be printed
+		 *
+		 * @returns  Modified output stream
+		 */
+		static std::ostream& printOrigCode(
+			std::ostream&         os,
+			const CodeList&       ucode)
+		{
+			const CodeStorage::Insn* lastInsn = nullptr;
+
+			for (const AbstractInstruction* instr : ucode)
+			{
+				const CodeStorage::Insn* clInsn = instr->insn();
+
+				if (clInsn && (clInsn != lastInsn))
+				{
+					os << insnToString(*clInsn) << "\n";
+					lastInsn = clInsn;
+				}
+			}
+
+			return os << std::endl;
+		}
 
 		/**
 		 * @brief  The output stream operator
@@ -219,7 +291,7 @@ public:
 		 */
 		friend std::ostream& operator<<(std::ostream& os, const Assembly& as)
 		{
-			return printCode(os, as.code_);
+			return printUcode(os, as.code_);
 		}
 	};
 

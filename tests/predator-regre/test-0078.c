@@ -1,6 +1,6 @@
 #include <verifier-builtins.h>
 
-#include <linux/stddef.h>
+/* #include <linux/stddef.h> */
 #include <stddef.h>
 #include <stdlib.h>
 
@@ -42,7 +42,7 @@ struct list_head {
  */
 static inline int list_empty(const struct list_head *head)
 {
-    //___sl_plot(NULL);
+    //__VERIFIER_plot(NULL);
 	return head->next == head;
 }
 
@@ -111,7 +111,7 @@ void traverse(struct list_head *head)
 {
     struct my_item *now;
     list_for_each_entry_reverse(now, head, link) {
-        ___sl_plot("now");
+        __VERIFIER_plot("now");
     }
 }
 

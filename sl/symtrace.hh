@@ -27,6 +27,7 @@
 
 #include "config.h"
 
+#include "id_mapper.hh"
 #include "symbt.hh"                 // needed for EMsgLevel
 #include "symheap.hh"               // needed for EObjKind
 
@@ -34,6 +35,8 @@
 #include <string>
 
 struct cl_loc;
+
+class SymState;
 
 namespace CodeStorage {
     struct Fnc;
@@ -52,6 +55,9 @@ typedef const CodeStorage::Fnc                     *TFnc;
 typedef const CodeStorage::Insn                    *TInsn;
 
 typedef std::vector<Node *>                         TNodeList;
+
+// TODO: should we use a more generic ID type?
+typedef IdMapper<TObjId, OBJ_INVALID, OBJ_MAX_ID>   TIdMapper;
 
 /// an abstract base for Node and NodeHandle (externally not much useful)
 class NodeBase {
@@ -128,10 +134,20 @@ class Node: public NodeBase {
             return this->parent();
         }
 
+    public:
+        /// return the ID mapping describing the operation behind the trace node
+        TIdMapper& idMapper()             { return idMapper_; }
+
+        /// return the ID mapping describing the operation behind the trace node
+        const TIdMapper& idMapper() const { return idMapper_; }
+
     private:
         // copying NOT allowed
         Node(const Node &);
         Node& operator=(const Node &);
+
+    protected:
+        TIdMapper idMapper_;
 
     private:
         TBaseList children_;
@@ -222,6 +238,7 @@ class InsnNode: public Node {
             insn_(insn),
             isBuiltin_(isBuiltin)
         {
+            idMapper_.setNotFoundAction(TIdMapper::NFA_RETURN_IDENTITY);
         }
 
         virtual Node* printNode() const;
@@ -253,6 +270,7 @@ class CondNode: public Node {
             determ_(determ),
             branch_(branch)
         {
+            idMapper_.setNotFoundAction(TIdMapper::NFA_RETURN_IDENTITY);
         }
 
         virtual Node* printNode() const;
@@ -264,7 +282,8 @@ class CondNode: public Node {
 /// a trace graph node that represents a @b single abstraction step
 class AbstractionNode: public Node {
     private:
-        const EObjKind kind_;
+        const EObjKind              kind_;
+        std::string                 name_;
 
     public:
         /**
@@ -277,6 +296,11 @@ class AbstractionNode: public Node {
         {
         }
 
+        /// @param name name of the corresponding debug plot (empty if unused)
+        void setPlotName(const std::string &name) {
+            name_ = name;
+        }
+
     protected:
         void virtual plotNode(TracePlotter &) const;
 };
@@ -284,16 +308,19 @@ class AbstractionNode: public Node {
 /// a trace graph node that represents a @b single concretization step
 class ConcretizationNode: public Node {
     private:
-        const EObjKind kind_;
+        const EObjKind              kind_;
+        const std::string           name_;
 
     public:
         /**
          * @param ref a trace leading to this concretization step
          * @param kind the kind of concretization step being performed
+         * @param name name of the corresponding debug plot (empty if unused)
          */
-        ConcretizationNode(Node *ref, EObjKind kind):
+        ConcretizationNode(Node *ref, EObjKind kind, const std::string &name):
             Node(ref),
-            kind_(kind)
+            kind_(kind),
+            name_(name)
         {
         }
 
@@ -315,9 +342,8 @@ class SpliceOutNode: public Node {
             Node(ref),
             len_(len)
         {
+            idMapper_.setNotFoundAction(TIdMapper::NFA_RETURN_IDENTITY);
         }
-
-        virtual Node* printNode() const;
 
     protected:
         void virtual plotNode(TracePlotter &) const;
@@ -452,6 +478,26 @@ class CallDoneNode: public Node {
         void virtual plotNode(TracePlotter &) const;
 };
 
+/// a trace graph node that represents a @b single call of importGlVar()
+class ImportGlVarNode: public Node {
+    private:
+        const std::string           varString_;
+
+    public:
+        /**
+         * @param ref a trace leading to this concretization step
+         * @param varString describing the global variable being imported
+         */
+        ImportGlVarNode(Node *ref, const std::string &varString):
+            Node(ref),
+            varString_(varString)
+        {
+        }
+
+    protected:
+        void virtual plotNode(TracePlotter &) const;
+};
+
 /// trace graph node representing an error/warning message
 class MsgNode: public Node {
     private:
@@ -469,6 +515,7 @@ class MsgNode: public Node {
             level_(level),
             loc_(loc)
         {
+            idMapper_.setNotFoundAction(TIdMapper::NFA_RETURN_IDENTITY);
         }
 
     protected:
@@ -492,6 +539,7 @@ class UserNode: public Node {
             insn_(insn),
             label_(label)
         {
+            idMapper_.setNotFoundAction(TIdMapper::NFA_RETURN_IDENTITY);
         }
 
         virtual Node* printNode() const;
@@ -501,7 +549,7 @@ class UserNode: public Node {
 };
 
 /// plot a trace graph named "name-NNNN.dot" leading to the given node
-bool plotTrace(Node *endPoint, const std::string &name);
+bool plotTrace(Node *endPoint, const std::string &name, std::string *pName = 0);
 
 /// print a human-readable trace using the Code Listener messaging API
 void printTrace(Node *endPoint);
@@ -586,6 +634,8 @@ class Globals {
 /// mark the just completed @b clone operation as @b intended and unimportant
 void waiveCloneOperation(SymHeap &sh);
 
+/// mark the just completed @b clone operation as @b intended and unimportant
+void waiveCloneOperation(SymState &);
 
 } // namespace Trace
 

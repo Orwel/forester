@@ -32,10 +32,10 @@
 #include <unordered_set>
 
 // Code Listener headers
+#include <cl/cl_msg.hh>
 #include <cl/cldebug.hh>
 
 // Forester headers
-#include "programerror.hh"
 #include "notimpl_except.hh"
 #include "symctx.hh"
 #include "nodebuilder.hh"
@@ -340,7 +340,8 @@ enum class builtin_e
 	biFix,
 	biAbort,
 	biPrintHeap,
-	biPlotHeap
+	biPlotHeap,
+	biError
 };
 
 
@@ -368,13 +369,14 @@ public:
 	BuiltinTable() :
 		_table{}
 	{
-		this->_table["malloc"]        = builtin_e::biMalloc;
-		this->_table["free"]          = builtin_e::biFree;
-		this->_table["__nondet"]      = builtin_e::biNondet;
-		this->_table["__fix"]         = builtin_e::biFix;
-		this->_table["__print_heap"]  = builtin_e::biPrintHeap;
-		this->_table["___fa_plot"]    = builtin_e::biPlotHeap;
-		this->_table["abort"]         = builtin_e::biAbort;
+		this->_table["malloc"]                  = builtin_e::biMalloc;
+		this->_table["free"]                    = builtin_e::biFree;
+		this->_table["abort"]                   = builtin_e::biAbort;
+		this->_table["___fa_get_nondet_int"]    = builtin_e::biNondet;
+		this->_table["___fa_error"]             = builtin_e::biError;
+		this->_table["__VERIFIER_plot"]         = builtin_e::biPlotHeap;
+		this->_table["___fa_fix"]               = builtin_e::biFix;
+		this->_table["___fa_print_heap"]        = builtin_e::biPrintHeap;
 	}
 
 	/**
@@ -751,8 +753,11 @@ protected:
 	 * @returns  @p true if the target is accessed using dereference, @p false
 	 *           otherwise
 	 */
-	bool cStoreReg(const cl_operand& op, size_t src, size_t tmp,
-		const CodeStorage::Insn& insn)
+	bool cStoreReg(
+		const cl_operand&           op,
+		size_t                      src,
+		size_t                      tmp,
+		const CodeStorage::Insn&    insn)
 	{
 		const cl_accessor* acc = op.accessor;    // the initial accessor
 		int offset = 0;                          // the initial offset
@@ -1047,8 +1052,11 @@ protected:
 	 * @returns  @p true if the value is stored into a variable, @p false if it is
 	 *           stored into a register
 	 */
-	bool cStoreOperand(const cl_operand& op, size_t src, size_t tmp,
-		const CodeStorage::Insn& insn)
+	bool cStoreOperand(
+		const cl_operand&           op,
+		size_t                      src,
+		size_t                      tmp,
+		const CodeStorage::Insn&    insn)
 	{
 		switch (op.code)
 		{	// according to the type of the operand
@@ -1086,6 +1094,7 @@ protected:
 					else
 					{
 						assert(false);         // fail gracefully
+						offset = 0;            // avoid using an uninitialized value in case assert(false) is noop
 					}
 
 					bool needsAcc = false;
@@ -1190,9 +1199,12 @@ protected:
 	 * @returns  Either @p nullptr if there are no feasible variables to be killed
 	 *           or a pointer to the instruction that loads the undefined data
 	 *           block that is used to kill given variables
+	 *
+	 * @note  Note that We are killing @e dead variables. This sounds very brutal.
 	 */
-	AbstractInstruction* cKillDeadVariables(const CodeStorage::TKillVarList& vars,
-		const CodeStorage::Insn& insn)
+	AbstractInstruction* cKillDeadVariables(
+		const CodeStorage::TKillVarList&        vars,
+		const CodeStorage::Insn&                insn)
 	{
 		std::set<size_t> offs;
 
@@ -1280,12 +1292,12 @@ protected:
 		size_t dstReg = lookupStoreReg(dst, 0);
 		size_t srcReg = cLoadOperand(dstReg, src, insn);
 
-		if (
-			src.type->code == cl_type_e::CL_TYPE_PTR &&
+		if (src.type->code == cl_type_e::CL_TYPE_PTR &&
 			src.type->items[0].type->code == cl_type_e::CL_TYPE_VOID &&
-			dst.type->items[0].type->code != cl_type_e::CL_TYPE_VOID
-		)
-		{	// in case the source is a void pointer and the destination is not
+			dst.type->items[0].type->code != cl_type_e::CL_TYPE_VOID)
+		{	// in case the source is a void pointer and the destination is not;
+			// this happens for example at the call of malloc, when conversion from
+			// a void pointer to a typed pointer is done
 
 			// build a node according to the destination type
 			std::vector<SelData> sels;
@@ -1496,7 +1508,7 @@ protected:
 		size_t src2Reg = cLoadOperand(1, src2, insn);
 
 		// append the desired instruction
-		append(new F(dstReg, src1Reg, src2Reg));
+		append(new F(&insn, dstReg, src1Reg, src2Reg));
 
 		cStoreOperand(
 			/* target operand */ dst,
@@ -1738,6 +1750,29 @@ protected:
 		append(new FI_ret(&insn, 0));
 	}
 
+	/**
+	 * @brief  Compiles the error instruction
+	 *
+	 * Compiles an instruction that represents an error location in the code.
+	 */
+	void compileError(const CodeStorage::Insn& insn)
+	{
+		const CodeStorage::TOperandList &opList = insn.operands;
+		assert(3 == opList.size());
+
+		const cl_operand& opMsg = opList[2];
+		// TODO: also allow CL_OPERAND_VAR
+		assert(CL_OPERAND_CST == opMsg.code);
+
+		const struct cl_cst &cstMsg = opMsg.data.cst;
+		assert(CL_TYPE_STRING == cstMsg.code);
+		assert(nullptr != cstMsg.data.cst_string.value);
+
+		std::string msg(cstMsg.data.cst_string.value);
+
+		append(new FI_error(&insn, msg));
+	}
+
 
 	/**
 	 * @brief  Compiles a conditional jump
@@ -1851,7 +1886,17 @@ protected:
 				cPlotHeap(insn);
 				return;
 			case builtin_e::biAbort:
+				// abort() is not supported... anyway, if abort() is used, Code Listener
+				// gives a special instruction as the last instruction (as there is
+				// no return): CL_INSN_ABORT
+				throw NotImplementedException(
+					insn.operands[1].data.cst.data.cst_fnc.name, &insn.loc);
+				// TODO: this does not look very nice either... where is checking for
+				// garbage?
 				this->append(new FI_abort(&insn));
+				return;
+			case builtin_e::biError:
+				compileError(insn);
 				return;
 			default:
 				break;

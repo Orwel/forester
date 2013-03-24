@@ -46,9 +46,8 @@ private:  // data members
 public:   // methods
 
 	TypeBox(
-		const std::string& name,
-		const std::vector<size_t>& selectors
-	) :
+		const std::string&             name,
+		const std::vector<size_t>&     selectors) :
 		AbstractBox(box_type_e::bTypeInfo, 0),
 		name_(name),
 		selectors_(selectors)
@@ -165,6 +164,14 @@ public:   // methods
 };
 
 
+/**
+ * @brief  The box containing a nested forest automaton
+ *
+ * This box contains a nested forest automaton with 1 or 2 components.
+ *
+ * @note  This is a simplification of the theoretic box which may have an
+ * arbitrary number of components!
+ */
 class Box : public StructuralBox
 {
 private:  // data types
@@ -199,11 +206,10 @@ public:
 		std::vector<std::pair<size_t,size_t>> selectors;
 
 		Signature(
-			const ConnectionGraph::CutpointSignature& outputSignature,
-			size_t inputIndex,
-			const ConnectionGraph::CutpointSignature& inputSignature,
-			const std::vector<std::pair<size_t,size_t>>& selectors
-		) :
+			const ConnectionGraph::CutpointSignature&       outputSignature,
+			size_t                                          inputIndex,
+			const ConnectionGraph::CutpointSignature&       inputSignature,
+			const std::vector<std::pair<size_t,size_t>>&    selectors) :
 			outputSignature(outputSignature),
 			inputIndex(inputIndex),
 			inputSignature(inputSignature),
@@ -229,34 +235,25 @@ public:
 protected:
 
 	static void getDownwardCoverage(
-		std::vector<size_t>& v,
-		const std::vector<const AbstractBox*>& label);
+		std::vector<size_t>&                       v,
+		const std::vector<const AbstractBox*>&     label);
 
 	static bool checkDownwardCoverage(
-		const std::vector<size_t>& v,
-		const TreeAut& ta);
+		const std::vector<size_t>&                 v,
+		const TreeAut&                             ta);
 
 	static void getDownwardCoverage(
-		std::set<size_t>& s,
-		const TreeAut& ta);
+		std::set<size_t>&                          s,
+		const TreeAut&                             ta);
 
 	static void getAcceptingLabels(
-		std::vector<label_type>& labels,
-		const TreeAut& ta);
+		std::vector<label_type>&                   labels,
+		const TreeAut&                             ta);
 
-	Box(
-		const std::string& name,
-		const std::shared_ptr<TreeAut>& output,
-		ConnectionGraph::CutpointSignature outputSignature,
-		const std::vector<size_t>& inputMap,
-		const std::shared_ptr<TreeAut>& input,
-		size_t inputIndex,
-		ConnectionGraph::CutpointSignature inputSignature,
-		const std::vector<std::pair<size_t,size_t>>& selectors
-	);
 
-	struct LeafEnumF {
 
+	struct LeafEnumF
+	{
 		std::vector<std::set<size_t>>& selectors;
 		const TreeAut& ta;
 		const TT<label_type>& t;
@@ -278,8 +275,8 @@ protected:
 
 	// enumerates upward selectors
 	void enumerateSelectorsAtLeaves(
-		std::vector<std::set<size_t>>& selectors,
-		const TreeAut& ta) const;
+		std::vector<std::set<size_t>>&        selectors,
+		const TreeAut&                        ta) const;
 
 public:
 
@@ -305,6 +302,12 @@ public:
 	{
 		assert((index + 1) < selCoverage_.size());
 		return selCoverage_[index + 1];
+	}
+
+	size_t outPortsNum() const
+	{
+		assert(!selCoverage_.empty());
+		return selCoverage_.size() - 1;
 	}
 
 	virtual size_t selectorToInput(size_t input) const
@@ -373,10 +376,37 @@ public:
 
 public:
 
-	virtual void toStream(std::ostream& os) const
-	{
-		os << name_ << '(' << arity_ << ')';
-	}
+
+	/**
+	 * @brief  Constructor
+	 *
+	 * Construct a box of the name @p name with the output direction tree
+	 * automaton @p output with the signature @p outputSignature and the map @p
+	 * inputMap of components to selectors and with the input direction tree
+	 * automaton @p input with the index of the input automaton @p inputIndex.
+	 *
+	 * @param[in]  name             The name of the box
+	 * @param[in]  output           The tree automaton for the output
+	 * @param[in]  outputSignature  The signature of the output component
+	 * @param[in]  inputMap         The map of components to selectors
+	 * @param[in]  input            The tree automaton for the input
+	 * @param[in]  inputIndex       Index of the input tree automaton
+	 * @param[in]  inputSignature   The signature of the input component
+	 * @param[in]  selectors        The vector of pairs of forward and backward
+	 *                              selectors
+	 */
+	Box(
+		const std::string&                               name,
+		const std::shared_ptr<TreeAut>&                  output,
+		ConnectionGraph::CutpointSignature               outputSignature,
+		const std::vector<size_t>&                       inputMap,
+		const std::shared_ptr<TreeAut>&                  input,
+		size_t                                           inputIndex,
+		ConnectionGraph::CutpointSignature               inputSignature,
+		const std::vector<std::pair<size_t,size_t>>&     selectors);
+
+
+	virtual void toStream(std::ostream& os) const;
 
 	friend size_t hash_value(const Box& box)
 	{

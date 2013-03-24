@@ -8,10 +8,10 @@ int main() {
     char *pos3 = pos2 - (0x13 - 0x07);
 
     // OK
-    ___SL_ASSERT(pos1 != pos2);
-    ___SL_ASSERT(pos1 == pos3);
+    __VERIFIER_assert(pos1 != pos2);
+    __VERIFIER_assert(pos1 == pos3);
 
-    switch (___sl_get_nondet_int()) {
+    switch (__VERIFIER_nondet_int()) {
         case 0:
             // NULL dereference
             *buf = '\0';
@@ -33,7 +33,7 @@ int main() {
             break;
     }
 
-    ___sl_plot(NULL);
+    __VERIFIER_plot(NULL);
     return !!buf;
 }
 

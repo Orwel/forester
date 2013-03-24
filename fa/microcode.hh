@@ -39,7 +39,7 @@
  * this instruction is executed.
  *
  */
-class FI_cond : public AbstractInstruction
+class FI_cond : public VoidInstruction
 {
 	/// Index of the register with the Boolean value
 	size_t src_;
@@ -56,19 +56,19 @@ public:
 
 	FI_cond(const CodeStorage::Insn* insn, size_t src,
 		AbstractInstruction* next[2]) :
-		AbstractInstruction(insn, fi_type_e::fiBranch),
+		VoidInstruction(insn, fi_type_e::fiBranch),
 		src_{src},
 		next_{next[0], next[1]}
 	{ }
 
 	FI_cond(const CodeStorage::Insn* insn, size_t src,
 		const std::vector<AbstractInstruction*>& next) :
-		AbstractInstruction(insn, fi_type_e::fiBranch),
+		VoidInstruction(insn, fi_type_e::fiBranch),
 		src_{src},
 		next_{next[0], next[1]}
 	{ }
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual void finalize(const std::unordered_map<const CodeStorage::Block*,
 			AbstractInstruction*>& codeIndex,
@@ -100,7 +100,12 @@ public:
 		: SequentialInstruction(insn, fi_type_e::fiUnspec),
 		dst_(dst), offset_(offset) {}
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
+
+	virtual SymState* reverseAndIsect(
+		ExecutionManager&                      execMan,
+		const SymState&                        fwdPred,
+		const SymState&                        bwdSucc) const;
 
 	virtual std::ostream& toStream(std::ostream& os) const {
 		return os << "acc   \t[r" << this->dst_ << " + " << this->offset_ << "]";
@@ -130,7 +135,12 @@ public:
 		const std::vector<size_t>& offsets)
 		: SequentialInstruction(insn), dst_(dst), base_(base), offsets_(offsets) {}
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
+
+	virtual SymState* reverseAndIsect(
+		ExecutionManager&                      execMan,
+		const SymState&                        fwdPred,
+		const SymState&                        bwdSucc) const;
 
 	virtual std::ostream& toStream(std::ostream& os) const {
 		return os << "acc   \t[r" << this->dst_ << " + " << this->base_
@@ -154,7 +164,12 @@ public:
 	FI_acc_all(const CodeStorage::Insn* insn, size_t dst)
 		: SequentialInstruction(insn), dst_(dst) {}
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
+
+	virtual SymState* reverseAndIsect(
+		ExecutionManager&                      execMan,
+		const SymState&                        fwdPred,
+		const SymState&                        bwdSucc) const;
 
 	virtual std::ostream& toStream(std::ostream& os) const {
 		return os << "acca  \t[r" << this->dst_ << ']';
@@ -165,23 +180,20 @@ public:
 /**
  * @brief  Loads a constant into a register
  */
-class FI_load_cst : public SequentialInstruction
+class FI_load_cst : public RegisterAssignment
 {
-	/// Index of the target register
-	size_t dst_;
-
 	/// The data value to be loaded into the register denoted by @p dst_
 	Data data_;
 
 public:
 
 	FI_load_cst(const CodeStorage::Insn* insn, size_t dst, const Data& data)
-		: SequentialInstruction(insn), dst_(dst), data_(data) {}
+		: RegisterAssignment(insn, dst), data_(data) {}
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
-		return os << "mov   \tr" << this->dst_ << ", " << this->data_;
+		return os << "mov   \tr" << this->dstReg_ << ", " << this->data_;
 	}
 
 };
@@ -189,23 +201,24 @@ public:
 /**
  * @brief  Moves a value between two registers
  */
-class FI_move_reg : public SequentialInstruction
+class FI_move_reg : public RegisterAssignment
 {
-	/// Index of the target register
-	size_t dst_;
-
 	/// Index of the source register
 	size_t src_;
 
 public:
 
 	FI_move_reg(const CodeStorage::Insn* insn, size_t dst, size_t src)
-		: SequentialInstruction(insn), dst_(dst), src_(src) {}
+		: RegisterAssignment(insn, dst), src_(src)
+	{
+		// Check that we don't make a useless move
+		assert(src_ != dstReg_);
+	}
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
-		return os << "mov   \tr" << this->dst_ << ", r" << this->src_;
+		return os << "mov   \tr" << this->dstReg_ << ", r" << this->src_;
 	}
 
 };
@@ -213,20 +226,17 @@ public:
 /**
  * @brief  Negates a Boolean value in a register
  */
-class FI_bnot : public SequentialInstruction
+class FI_bnot : public RegisterAssignment
 {
-	/// Index of both the source and the target register
-	size_t dst_;
-
 public:
 
 	FI_bnot(const CodeStorage::Insn* insn, size_t dst)
-		: SequentialInstruction(insn), dst_(dst) {}
+		: RegisterAssignment(insn, dst) { }
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
-		return os << "not   \tr" << this->dst_;
+		return os << "not   \tr" << this->dstReg_;
 	}
 
 };
@@ -236,20 +246,17 @@ public:
  *
  * Negates an integer value in a register: the result is a Boolean.
  */
-class FI_inot : public SequentialInstruction
+class FI_inot : public RegisterAssignment
 {
-	/// The both source and target register
-	size_t dst_;
-
 public:
 
 	FI_inot(const CodeStorage::Insn* insn, size_t dst) :
-		SequentialInstruction(insn), dst_(dst) {}
+		RegisterAssignment(insn, dst) { }
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
-		return os << "not   \tr" << this->dst_;
+		return os << "not   \tr" << this->dstReg_;
 	}
 
 };
@@ -261,11 +268,8 @@ public:
  * register. Before storing the reference into the target register, the
  * displacement is incremented by a specified offset.
  */
-class FI_move_reg_offs : public SequentialInstruction
+class FI_move_reg_offs : public RegisterAssignment
 {
-	/// Index of the target register
-	size_t dst_;
-
 	/// Index of the source register
 	size_t src_;
 
@@ -276,12 +280,13 @@ public:
 
 	FI_move_reg_offs(const CodeStorage::Insn* insn,
 		size_t dst, size_t src, int offset)
-		: SequentialInstruction(insn), dst_(dst), src_(src), offset_(offset) {}
+		: RegisterAssignment(insn, dst), src_(src), offset_(offset)
+	{ }
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
-		return os << "mov   \tr" << this->dst_ << ", r" << this->src_
+		return os << "mov   \tr" << this->dstReg_ << ", r" << this->src_
 			<< " + " << this->offset_;
 	}
 
@@ -294,11 +299,8 @@ public:
  * register. Before storing the reference into the target register, the
  * displacement is incremented by the value in the specified register.
  */
-class FI_move_reg_inc : public SequentialInstruction
+class FI_move_reg_inc : public RegisterAssignment
 {
-	/// Index of the target register
-	size_t dst_;
-
 	/// Index of the source register
 	size_t src1_;
 
@@ -309,12 +311,13 @@ public:
 
 	FI_move_reg_inc(const CodeStorage::Insn* insn,
 		size_t dst, size_t src1, size_t src2)
-		: SequentialInstruction(insn), dst_(dst), src1_(src1), src2_(src2) {}
+		: RegisterAssignment(insn, dst), src1_(src1), src2_(src2)
+	{ }
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
-		return os << "mov   \tr" << this->dst_ << ", r" << this->src1_
+		return os << "mov   \tr" << this->dstReg_ << ", r" << this->src1_
 			<< " + r" << this->src2_;
 	}
 
@@ -325,23 +328,20 @@ public:
  *
  * Loads the value from a global register into a local register.
  */
-class FI_get_greg : public SequentialInstruction
+class FI_get_greg : public RegisterAssignment
 {
-	/// Index of the target local register
-	size_t dst_;
-
 	/// Index of the source global register
 	size_t src_;
 
 public:
 
 	FI_get_greg(const CodeStorage::Insn* insn, size_t dst, size_t src)
-		: SequentialInstruction(insn), dst_(dst), src_(src) {}
+		: RegisterAssignment(insn, dst), src_(src) { }
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
-		return os << "mov   \tr" << this->dst_ << ", gr" << this->src_;
+		return os << "mov   \tr" << this->dstReg_ << ", gr" << this->src_;
 	}
 
 };
@@ -364,7 +364,12 @@ public:
 	FI_set_greg(const CodeStorage::Insn* insn, size_t dst, size_t src)
 		: SequentialInstruction(insn), dst_(dst), src_(src) {}
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
+
+	virtual SymState* reverseAndIsect(
+		ExecutionManager&                      execMan,
+		const SymState&                        fwdPred,
+		const SymState&                        bwdSucc) const;
 
 	virtual std::ostream& toStream(std::ostream& os) const {
 		return os << "mov   \tgr" << this->dst_ << ", r" << this->src_;
@@ -377,23 +382,20 @@ public:
  *
  * Loads the ABP pointer incremented by the specified offset into a register.
  */
-class FI_get_ABP : public SequentialInstruction
+class FI_get_ABP : public RegisterAssignment
 {
-	/// Index of the target register
-	size_t dst_;
-
 	/// Offset to be added to the loaded pointer
 	int offset_;
 
 public:
 
 	FI_get_ABP(const CodeStorage::Insn* insn, size_t dst, int offset)
-		: SequentialInstruction(insn), dst_(dst), offset_(offset) {}
+		: RegisterAssignment(insn, dst), offset_(offset) { }
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
-		return os << "mov   \tr" << this->dst_ << ", ABP + " << this->offset_;
+		return os << "mov   \tr" << this->dstReg_ << ", ABP + " << this->offset_;
 	}
 
 };
@@ -403,23 +405,20 @@ public:
  *
  * Loads the GLOB pointer incremented by the specified offset into a register.
  */
-class FI_get_GLOB : public SequentialInstruction
+class FI_get_GLOB : public RegisterAssignment
 {
-	/// Index of the target register
-	size_t dst_;
-
 	/// Offset to be added to the loaded pointer
 	int offset_;
 
 public:
 
 	FI_get_GLOB(const CodeStorage::Insn* insn, size_t dst, int offset)
-		: SequentialInstruction(insn), dst_(dst), offset_(offset) {}
+		: RegisterAssignment(insn, dst),  offset_(offset) { }
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
-		return os << "mov   \tr" << this->dst_ << ", GLOB + " << this->offset_;
+		return os << "mov   \tr" << this->dstReg_ << ", GLOB + " << this->offset_;
 	}
 
 };
@@ -430,11 +429,8 @@ public:
  * Loads a value at a given @p offset_ from the location pointed by the @p src_
  * register into the @p dst_ register.
  */
-class FI_load : public SequentialInstruction
+class FI_load : public RegisterAssignment
 {
-	/// Index of the target register
-	size_t dst_;
-
 	/// Index of the source register
 	size_t src_;
 
@@ -444,12 +440,13 @@ class FI_load : public SequentialInstruction
 public:
 
 	FI_load(const CodeStorage::Insn* insn, size_t dst, size_t src, int offset)
-		: SequentialInstruction(insn), dst_(dst), src_(src), offset_(offset) {}
+		: RegisterAssignment(insn, dst), src_(src), offset_(offset)
+	{ }
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
-		return os << "mov   \tr" << this->dst_ << ", [r" << this->src_
+		return os << "mov   \tr" << this->dstReg_ << ", [r" << this->src_
 			<< " + " << this->offset_ << ']';
 	}
 
@@ -461,23 +458,20 @@ public:
  * Loads a value which is at the specified offset from the location pointed by
  * the ABP pointer into a register.
  */
-class FI_load_ABP : public SequentialInstruction
+class FI_load_ABP : public RegisterAssignment
 {
-	/// Index of the target register
-	size_t dst_;
-
 	/// Offset from the ABP 
 	int offset_;
 
 public:
 
 	FI_load_ABP(const CodeStorage::Insn* insn, size_t dst, int offset)
-		: SequentialInstruction(insn), dst_(dst), offset_(offset) {}
+		: RegisterAssignment(insn, dst), offset_(offset) { }
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
-		return os << "mov   \tr" << this->dst_ << ", [ABP + " << this->offset_ << ']';
+		return os << "mov   \tr" << this->dstReg_ << ", [ABP + " << this->offset_ << ']';
 	}
 
 };
@@ -488,23 +482,20 @@ public:
  * Loads a value which is at the specified offset from the location pointed by
  * the GLOB pointer into a register.
  */
-class FI_load_GLOB : public SequentialInstruction
+class FI_load_GLOB : public RegisterAssignment
 {
-	/// Index of the target register
-	size_t dst_;
-
 	/// Offset from the GLOB
 	int offset_;
 
 public:
 
 	FI_load_GLOB(const CodeStorage::Insn* insn, size_t dst, int offset)
-		: SequentialInstruction(insn), dst_(dst), offset_(offset) {}
+		: RegisterAssignment(insn, dst), offset_(offset) { }
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
-		return os << "mov   \tr" << this->dst_ << ", [GLOB + " << this->offset_ << ']';
+		return os << "mov   \tr" << this->dstReg_ << ", [GLOB + " << this->offset_ << ']';
 	}
 
 };
@@ -530,9 +521,18 @@ class FI_store : public SequentialInstruction
 public:
 
 	FI_store(const CodeStorage::Insn* insn, size_t dst, size_t src, int offset)
-		: SequentialInstruction(insn), dst_(dst), src_(src), offset_(offset) {}
+		: SequentialInstruction(insn), dst_(dst), src_(src), offset_(offset)
+	{
+		// Assertions
+		assert(src_ != dst_);
+	}
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
+
+	virtual SymState* reverseAndIsect(
+		ExecutionManager&                      execMan,
+		const SymState&                        fwdPred,
+		const SymState&                        bwdSucc) const;
 
 	virtual std::ostream& toStream(std::ostream& os) const {
 		return os << "mov   \t[r" << this->dst_ << " + " << this->offset_
@@ -547,11 +547,8 @@ public:
  * Loads a structure with multiple offsets pointed by the @p src_ register into
  * the @p dst_ register.
  */
-class FI_loads : public SequentialInstruction
+class FI_loads : public RegisterAssignment
 {
-	/// Index of the target register
-	size_t dst_;
-
 	/// Index of the source register
 	size_t src_;
 
@@ -564,14 +561,15 @@ class FI_loads : public SequentialInstruction
 public:
 
 	FI_loads(const CodeStorage::Insn* insn, size_t dst, size_t src, int base,
-		const std::vector<size_t>& offsets)
-		: SequentialInstruction(insn), dst_(dst), src_(src), base_(base),
-		offsets_(offsets) {}
+		const std::vector<size_t>& offsets) :
+		RegisterAssignment(insn, dst), src_(src), base_(base),
+		offsets_(offsets)
+	{ }
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
-		return os << "mov   \tr" << this->dst_ << ", [r" << this->src_ << " + "
+		return os << "mov   \tr" << this->dstReg_ << ", [r" << this->src_ << " + "
 			<< this->base_ << " + " << utils::wrap(this->offsets_) << ']';
 	}
 
@@ -597,9 +595,18 @@ class FI_stores : public SequentialInstruction
 public:
 
 	FI_stores(const CodeStorage::Insn* insn, size_t dst, size_t src, int base)
-		: SequentialInstruction(insn), dst_(dst), src_(src), base_(base) {}
+		: SequentialInstruction(insn), dst_(dst), src_(src), base_(base)
+	{
+		// Assertions
+		assert(src_ != dst_);
+	}
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
+
+	virtual SymState* reverseAndIsect(
+		ExecutionManager&                      execMan,
+		const SymState&                        fwdPred,
+		const SymState&                        bwdSucc) const;
 
 	virtual std::ostream& toStream(std::ostream& os) const {
 		return os << "mov   \t[r" << this->dst_ << " + " << this->base_
@@ -614,23 +621,21 @@ public:
  * Allocates a memory block of given size and stores a reference to it in
  * a register.
  */
-class FI_alloc : public SequentialInstruction
+class FI_alloc : public RegisterAssignment
 {
-	/// Index of the register into which the allocated block will be stored
-	size_t dst_;
-
 	/// Index of the register with the size of the allocated block
 	size_t src_;
 
 public:
 
 	FI_alloc(const CodeStorage::Insn* insn, size_t dst, size_t src)
-		: SequentialInstruction(insn), dst_(dst), src_(src) {}
+		: RegisterAssignment(insn, dst), src_(src)
+	{ }
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
-		return os << "alloc \tr" << this->dst_ << ", r" << this->src_;
+		return os << "alloc \tr" << this->dstReg_ << ", r" << this->src_;
 	}
 
 };
@@ -666,12 +671,12 @@ private:  // methods
 public:
 
 	FI_node_create(
-		const CodeStorage::Insn* insn,
-		size_t dst,
-		size_t src,
-		size_t size,
-		const TypeBox* typeInfo,
-		const std::vector<SelData>& sels
+		const CodeStorage::Insn*        insn,
+		size_t                          dst,
+		size_t                          src,
+		size_t                          size,
+		const TypeBox*                  typeInfo,
+		const std::vector<SelData>&     sels
 	) :
 		SequentialInstruction(insn),
 		dst_(dst),
@@ -681,7 +686,12 @@ public:
 		sels_(sels)
 	{ }
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
+
+	virtual SymState* reverseAndIsect(
+		ExecutionManager&                      execMan,
+		const SymState&                        fwdPred,
+		const SymState&                        bwdSucc) const;
 
 	virtual std::ostream& toStream(std::ostream& os) const
 	{
@@ -718,7 +728,12 @@ public:
 	FI_node_free(const CodeStorage::Insn* insn, size_t dst)
 		: SequentialInstruction(insn), dst_(dst) {}
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
+
+	virtual SymState* reverseAndIsect(
+		ExecutionManager&                      execMan,
+		const SymState&                        fwdPred,
+		const SymState&                        bwdSucc) const;
 
 	virtual std::ostream& toStream(std::ostream& os) const {
 		return os << "free  \tr" << this->dst_;
@@ -729,11 +744,8 @@ public:
 /**
  * @brief  Computes integer addition
  */
-class FI_iadd : public SequentialInstruction
+class FI_iadd : public RegisterAssignment
 {
-	/// Index of the target register
-	size_t dst_;
-
 	/// Index of the register with the first operand
 	size_t src1_;
 
@@ -743,12 +755,13 @@ class FI_iadd : public SequentialInstruction
 public:
 
 	FI_iadd(const CodeStorage::Insn* insn, size_t dst, size_t src1, size_t src2)
-		: SequentialInstruction(insn), dst_(dst), src1_(src1), src2_(src2) {}
+		: RegisterAssignment(insn, dst), src1_(src1), src2_(src2)
+	{ }
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
-		return os << "iadd  \tr" << this->dst_ << ", r" << this->src1_
+		return os << "iadd  \tr" << this->dstReg_ << ", r" << this->src1_
 			<< ", r" << this->src2_;
 	}
 
@@ -757,14 +770,14 @@ public:
 /**
  * @brief  Checks for the absence of garbage
  */
-class FI_check : public SequentialInstruction
+class FI_check : public VoidInstruction
 {
 public:
 
 	FI_check(const CodeStorage::Insn* insn)
-		: SequentialInstruction(insn, fi_type_e::fiCheck) {}
+		: VoidInstruction(insn, fi_type_e::fiCheck) {}
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
 		return os << "check ";
@@ -777,7 +790,7 @@ public:
  *
  * Checks whether the value of a register is equal to the desired value.
  */
-class FI_assert : public SequentialInstruction
+class FI_assert : public VoidInstruction
 {
 	/// Index of the source register
 	size_t dst_;
@@ -788,9 +801,9 @@ class FI_assert : public SequentialInstruction
 public:
 
 	FI_assert(const CodeStorage::Insn* insn, size_t dst, const Data& cst)
-		: SequentialInstruction(insn), dst_(dst), cst_(cst) {}
+		: VoidInstruction(insn), dst_(dst), cst_(cst) {}
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
 		return os << "assert\tr" << this->dst_ << ", " << this->cst_;
@@ -801,14 +814,19 @@ public:
 /**
  * @brief  Aborts the program execution (exit)
  */
-class FI_abort : public AbstractInstruction
+class FI_abort : public SequentialInstruction
 {
 public:
 
 	FI_abort(const CodeStorage::Insn* insn)
-		: AbstractInstruction(insn, fi_type_e::fiAbort) {}
+		: SequentialInstruction(insn, fi_type_e::fiAbort) {}
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
+
+	virtual SymState* reverseAndIsect(
+		ExecutionManager&                      execMan,
+		const SymState&                        fwdPred,
+		const SymState&                        bwdSucc) const;
 
 	virtual std::ostream& toStream(std::ostream& os) const {
 		return os << "abort ";
@@ -830,11 +848,8 @@ public:
  * Builds a memory structure (e.g. a stack frame) from registers' content
  * (starting from the @p start_ register.
  */
-class FI_build_struct : public SequentialInstruction
+class FI_build_struct : public RegisterAssignment
 {
-	/// Index of the destination register
-	size_t dst_;
-
 	/// Index of the starting register
 	size_t start_;
 
@@ -844,13 +859,13 @@ class FI_build_struct : public SequentialInstruction
 public:
 
 	FI_build_struct(const CodeStorage::Insn* insn, size_t dst, size_t start,
-		const std::vector<size_t>& offsets)
-		: SequentialInstruction(insn), dst_(dst), start_(start), offsets_(offsets) {}
+		const std::vector<size_t>& offsets) :
+		RegisterAssignment(insn, dst), start_(start), offsets_(offsets) { }
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
-		os << "mov   \tr" << this->dst_ << ", {";
+		os << "mov   \tr" << this->dstReg_ << ", {";
 		for (size_t i = 0; i < this->offsets_.size(); ++i) {
 			os << " +" << this->offsets_[i] << ":r" << this->start_ + i;
 		}
@@ -876,7 +891,12 @@ public:
 	FI_push_greg(const CodeStorage::Insn* insn, size_t src)
 		: SequentialInstruction(insn), src_(src) {}
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
+
+	virtual SymState* reverseAndIsect(
+		ExecutionManager&                      execMan,
+		const SymState&                        fwdPred,
+		const SymState&                        bwdSucc) const;
 
 	virtual std::ostream& toStream(std::ostream& os) const {
 		return os << "gpush \tr" << this->src_;
@@ -900,7 +920,12 @@ public:
 	FI_pop_greg(const CodeStorage::Insn* insn, size_t dst)
 		: SequentialInstruction(insn), dst_(dst) {}
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
+
+	virtual SymState* reverseAndIsect(
+		ExecutionManager&                      execMan,
+		const SymState&                        fwdPred,
+		const SymState&                        bwdSucc) const;
 
 	virtual std::ostream& toStream(std::ostream& os) const {
 		return os << "gpop  \tr" << this->dst_;
@@ -913,7 +938,7 @@ public:
  *
  * Prints the heap in a human readable format (ehm?)
  */
-class FI_print_heap : public SequentialInstruction
+class FI_print_heap : public VoidInstruction
 {
 	/// The context to be printed
 	const struct SymCtx* ctx_;
@@ -926,9 +951,9 @@ private:  // methods
 public:
 
 	FI_print_heap(const CodeStorage::Insn* insn, const struct SymCtx* ctx)
-		: SequentialInstruction(insn), ctx_(ctx) {}
+		: VoidInstruction(insn), ctx_(ctx) {}
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
 		return os << "prh ";
@@ -941,7 +966,7 @@ public:
  *
  * Plots the heap.
  */
-class FI_plot_heap : public SequentialInstruction
+class FI_plot_heap : public VoidInstruction
 {
 private:  // methods
 
@@ -951,13 +976,40 @@ private:  // methods
 public:
 
 	FI_plot_heap(const CodeStorage::Insn* insn)
-		: SequentialInstruction(insn) {}
+		: VoidInstruction(insn) {}
 
-	virtual void execute(ExecutionManager& execMan, const ExecState& state);
+	virtual void execute(ExecutionManager& execMan, SymState& state);
 
 	virtual std::ostream& toStream(std::ostream& os) const {
 		return os << "plot ";
 	}
 };
 
+/**
+ * @brief  Error instruction
+ *
+ * Represents an error location.
+ */
+class FI_error : public VoidInstruction
+{
+private:  // data members
+
+	/// the error message
+	std::string msg_;
+
+public:
+
+	FI_error(const CodeStorage::Insn* insn, const std::string msg) :
+		VoidInstruction(insn),
+		msg_(msg)
+	{ }
+
+	virtual void execute(ExecutionManager& execMan, SymState& state);
+
+	virtual std::ostream& toStream(std::ostream& os) const
+	{
+		return os << "error";
+	}
+
+};
 #endif

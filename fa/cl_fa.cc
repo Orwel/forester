@@ -22,6 +22,7 @@
 #include <signal.h>
 
 // Code Listener headers
+#include <cl/cl_msg.hh>
 #include <cl/easy.hh>
 #include "../cl/ssd.h"
 
@@ -45,7 +46,9 @@ void userRequestHandler(int) {
 }
 
 // required by the gcc plug-in API
-extern "C" { int plugin_is_GPL_compatible; }
+extern "C" {
+    __attribute__ ((__visibility__ ("default"))) int plugin_is_GPL_compatible;
+}
 
 #if 0
 struct BoxDb {
@@ -136,8 +139,16 @@ void clEasyRun(const CodeStorage::Storage& stor, const char* configString)
 		{
 			FA_LOG("Printing microcode");
 			std::ostringstream os;
-			os << se->GetAssembly();
+			Compiler::Assembly::printUcode(os, se->GetAssembly().code_);
 			Streams::ucode(os.str().c_str());
+		}
+
+		if (conf.printOrigCode)
+		{
+			FA_LOG("Printing input code");
+			std::ostringstream os;
+			Compiler::Assembly::printOrigCode(os, se->GetAssembly().code_);
+			Streams::origCode(os.str().c_str());
 		}
 
 		if (!conf.onlyCompile)

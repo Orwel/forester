@@ -15,33 +15,33 @@ struct list {
 static void inspect_before(struct list *shape)
 {
     // we should get a list of sub-lists of length exactly one
-    ___SL_ASSERT(shape);
+    __VERIFIER_assert(shape);
 
     for (; shape->next; shape = shape->next) {
-        ___SL_ASSERT(shape);
-        ___SL_ASSERT(shape->next);
-        ___SL_ASSERT(shape->slist);
-        ___SL_ASSERT(shape->slist->next == NULL);
+        __VERIFIER_assert(shape);
+        __VERIFIER_assert(shape->next);
+        __VERIFIER_assert(shape->slist);
+        __VERIFIER_assert(shape->slist->next == NULL);
     }
 
     // check the last node separately to make the exercising more fun
-    ___SL_ASSERT(shape);
-    ___SL_ASSERT(shape->next == NULL);
-    ___SL_ASSERT(shape->slist);
-    ___SL_ASSERT(shape->slist->next == NULL);
+    __VERIFIER_assert(shape);
+    __VERIFIER_assert(shape->next == NULL);
+    __VERIFIER_assert(shape->slist);
+    __VERIFIER_assert(shape->slist->next == NULL);
 }
 
 static void inspect_after(struct list *shape)
 {
     // we should get exactly one node at the top level and one nested list
-    ___SL_ASSERT(shape);
-    ___SL_ASSERT(shape->next == NULL);
-    ___SL_ASSERT(shape->slist != NULL);
+    __VERIFIER_assert(shape);
+    __VERIFIER_assert(shape->next == NULL);
+    __VERIFIER_assert(shape->slist != NULL);
 
     // the nested list should be zero terminated (iterator back by one node)
     struct node *pos;
     for (pos = shape->slist; pos->next; pos = pos->next);
-    ___SL_ASSERT(!pos->next);
+    __VERIFIER_assert(!pos->next);
 }
 
 static void merge_single_node(struct node ***ppdst,
@@ -113,13 +113,13 @@ void seq_sort(struct list **ptr_to_seq)
 int main()
 {
     struct list *seq = NULL;
-    while (___sl_get_nondet_int()) {
+    while (__VERIFIER_nondet_int()) {
         struct node *node = malloc(sizeof *node);
         if (!node)
             abort();
 
         node->next = NULL;
-        node->value = ___sl_get_nondet_int();
+        node->value = __VERIFIER_nondet_int();
 
         struct list *item = malloc(sizeof *item);
         if (!item)

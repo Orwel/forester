@@ -26,10 +26,8 @@
 #include <cl/storage.hh>
 
 #include "intarena.hh"
-#include "symabstract.hh"
 #include "syments.hh"
 #include "sympred.hh"
-#include "symseg.hh"
 #include "symutil.hh"
 #include "symtrace.hh"
 #include "util.hh"
@@ -123,11 +121,11 @@ class CVarMap {
         RefCounter refCnt;
 
     private:
-        typedef std::map<CVar, TValId>              TCont;
+        typedef std::map<CVar, TObjId>              TCont;
         TCont                                       cont_;
 
     public:
-        void insert(CVar cVar, TValId val) {
+        void insert(CVar cVar, TObjId val) {
             // check for mapping redefinition
             CL_BREAK_IF(hasKey(cont_, cVar));
 
@@ -140,7 +138,7 @@ class CVarMap {
                 CL_BREAK_IF("offset detected in CVarMap::remove()");
         }
 
-        TValId find(const CVar &cVar) {
+        TObjId find(const CVar &cVar) {
             // regular lookup
             TCont::iterator iter = cont_.find(cVar);
             const bool found = (cont_.end() != iter);
@@ -148,7 +146,7 @@ class CVarMap {
                 // gl variable explicitly requested
                 return (found)
                     ? iter->second
-                    : VAL_INVALID;
+                    : OBJ_INVALID;
             }
 
             // automatic fallback to gl variable
@@ -159,7 +157,7 @@ class CVarMap {
 
             if (!found && !foundGl)
                 // not found anywhere
-                return VAL_INVALID;
+                return OBJ_INVALID;
 
             // check for clash on uid among lc/gl variable
             CL_BREAK_IF(found && foundGl);
@@ -281,6 +279,7 @@ typedef IntervalArena<TOffset, TFldId>                  TArena;
 typedef TArena::key_type                                TMemChunk;
 typedef TArena::value_type                              TMemItem;
 typedef std::map<CallInst, TObjList>                    TAnonStackMap;
+typedef std::map<ETargetSpecifier, TValId>              TAddrByTS;
 
 inline TMemItem createArenaItem(
         const TOffset               off,
@@ -325,8 +324,7 @@ inline TMemChunk createChunk(const TOffset off, const TObjType clt)
 
 enum EBlockKind {
     BK_INVALID,
-    BK_DATA_PTR,
-    BK_DATA_OBJ,
+    BK_FIELD,
     BK_COMPOSITE,
     BK_UNIFORM
 };
@@ -335,12 +333,9 @@ typedef std::map<TFldId, EBlockKind>                    TLiveObjs;
 
 inline EBlockKind bkFromClt(const TObjType clt)
 {
-    if (isComposite(clt, /* includingArray */ false))
-        return BK_COMPOSITE;
-
-    return (isDataPtr(clt))
-        ? BK_DATA_PTR
-        : BK_DATA_OBJ;
+    return (isComposite(clt, /* includingArray */ false))
+        ? BK_COMPOSITE
+        : BK_FIELD;
 }
 
 class AbstractHeapEntity {
@@ -488,9 +483,6 @@ struct InternalCustomValue: public ReferableValue {
 };
 
 struct Region: public AbstractHeapEntity {
-    /// TODO: drop this
-    TValId                          rootAddr;
-
     EStorageClass                   code;
     CVar                            cVar;
     TSizeRange                      size;
@@ -500,9 +492,9 @@ struct Region: public AbstractHeapEntity {
     TObjType                        lastKnownClt;
     bool                            isValid;
     TProtoLevel                     protoLevel;
+    TAddrByTS                       addrByTS;
 
     Region(EStorageClass code_):
-        rootAddr(VAL_INVALID),
         code(code_),
         size(IR::rngFromNum(0)),
         lastKnownClt(0),
@@ -518,10 +510,12 @@ struct Region: public AbstractHeapEntity {
 
 struct BaseAddress: public AnchorValue {
     TObjId                          obj;
+    ETargetSpecifier                ts;
 
-    BaseAddress(EValueTarget code_, EValueOrigin origin_):
-        AnchorValue(code_, origin_),
-        obj(OBJ_INVALID)
+    BaseAddress(const TObjId obj_, const ETargetSpecifier ts_):
+        AnchorValue(VT_OBJECT, VO_ASSIGNED),
+        obj(obj_),
+        ts(ts_)
     {
     }
 
@@ -615,7 +609,7 @@ struct SymHeapCore::Private {
     bool valsEqual(TValId, TValId);
 
     TFldId fldCreate(TObjId obj, TOffset off, TObjType clt);
-    TValId objInit(TFldId fld);
+    TValId fldInit(TFldId fld);
     void fldDestroy(TFldId, bool removeVal, bool detach);
 
     TFldId copySingleLiveBlock(
@@ -625,8 +619,6 @@ struct SymHeapCore::Private {
             const EBlockKind        code,
             const TOffset           shift = 0,
             const TSizeOf           sizeLimit = 0);
-
-    TValId dupRoot(TValId root);
 
     bool /* wasPtr */ releaseValueOf(TFldId fld, TValId val);
     void registerValueOf(TFldId fld, TValId val);
@@ -898,8 +890,7 @@ void SymHeapCore::Private::splitBlockByObject(
 
     const EBlockKind code = hbData->code;
     switch (code) {
-        case BK_DATA_PTR:
-        case BK_DATA_OBJ:
+        case BK_FIELD:
             if (this->valsEqual(blData->value, hbData->value))
                 // preserve non-conflicting uniform blocks
                 return;
@@ -986,16 +977,16 @@ void SymHeapCore::Private::splitBlockByObject(
 }
 
 bool isCoveredByBlock(
-        const FieldOfObj           *objData,
+        const FieldOfObj           *fldData,
         const BlockEntity          *blData)
 {
-    const TOffset beg1 = objData->off;
+    const TOffset beg1 = fldData->off;
     const TOffset beg2 = blData->off;
     if (beg1 < beg2)
         // the object starts above the block
         return false;
 
-    const TOffset end1 = beg1 + objData->clt->size;
+    const TOffset end1 = beg1 + fldData->clt->size;
     const TOffset end2 = beg2 + blData->size;
     return (end1 <= end2);
 }
@@ -1079,22 +1070,17 @@ bool SymHeapCore::Private::reinterpretSingleObj(
     CL_BREAK_IF(srcData->obj != dstData->obj);
 
     const EBlockKind code = srcData->code;
-    switch (code) {
-        case BK_DATA_OBJ:
-            break;
+    if (BK_FIELD != code)
+        // TODO: hook various reinterpretation drivers here
+        return false;
 
-        default:
-            // TODO: hook various reinterpretation drivers here
-            return false;
-    }
-
-    const FieldOfObj *objData = DCAST<const FieldOfObj *>(srcData);
-    const TValId valSrc = objData->value;
+    const FieldOfObj *fldData = DCAST<const FieldOfObj *>(srcData);
+    const TValId valSrc = fldData->value;
     if (VAL_INVALID == valSrc)
         // invalid source
         return false;
 
-    const TObjType cltSrc = objData->clt;
+    const TObjType cltSrc = fldData->clt;
     const TObjType cltDst = dstData->clt;
 
     if (isString(cltSrc) && isChar(cltDst)) {
@@ -1132,8 +1118,7 @@ void SymHeapCore::Private::reinterpretObjData(
 
     EBlockKind code = blData->code;
     switch (code) {
-        case BK_DATA_PTR:
-        case BK_DATA_OBJ:
+        case BK_FIELD:
             break;
 
         case BK_COMPOSITE:
@@ -1174,8 +1159,7 @@ void SymHeapCore::Private::reinterpretObjData(
             }
             // fall through!
 
-        case BK_DATA_PTR:
-        case BK_DATA_OBJ:
+        case BK_FIELD:
             if (this->reinterpretSingleObj(oldData, blData))
                 goto data_restored;
 
@@ -1210,26 +1194,30 @@ void SymHeapCore::Private::setValueOf(
         TValSet                    *killedPtrs)
 {
     // release old value
-    FieldOfObj *objData;
-    this->ents.getEntRW(&objData, fld);
+    FieldOfObj *fldData;
+    this->ents.getEntRW(&fldData, fld);
 
-    const TValId valOld = objData->value;
+    const TValId valOld = fldData->value;
+    if (valOld == val)
+        // we are asked to write a value which is already there, skip it!
+        return;
+
     if (/* wasPtr */ this->releaseValueOf(fld, valOld) && killedPtrs)
         killedPtrs->insert(valOld);
 
     // store new value
-    objData->value = val;
+    fldData->value = val;
     this->registerValueOf(fld, val);
 
     // read object data
-    const TObjId obj = objData->obj;
+    const TObjId obj = fldData->obj;
     Region *rootData;
     this->ents.getEntRW(&rootData, obj);
 
     // (re)insert self into the arena if not there
     TArena &arena = rootData->arena;
-    const TOffset off = objData->off;
-    const TObjType clt = objData->clt;
+    const TOffset off = fldData->off;
+    const TObjType clt = fldData->clt;
     arena += createArenaItem(off, clt->size, fld);
 
     // invalidate contents of the objects we are overwriting
@@ -1248,8 +1236,8 @@ TFldId SymHeapCore::Private::fldCreate(
         TObjType                    clt)
 {
     // acquire object ID
-    FieldOfObj *objData = new FieldOfObj(obj, off, clt);
-    const TFldId fld = this->assignId(objData);
+    FieldOfObj *fldData = new FieldOfObj(obj, off, clt);
+    const TFldId fld = this->assignId(fldData);
 
     // read object data
     Region *rootData;
@@ -1305,6 +1293,11 @@ TValId SymHeapCore::Private::valCreate(
 
     switch (code) {
         case VT_INVALID:
+        case VT_OBJECT:
+        case VT_RANGE:
+            CL_BREAK_IF("invalid call of SymHeapCore::Private::valCreate()");
+            // fall through!
+
         case VT_UNKNOWN:
             val = this->assignId(new BaseValue(code, origin));
             break;
@@ -1315,14 +1308,6 @@ TValId SymHeapCore::Private::valCreate(
 
         case VT_CUSTOM:
             val = this->assignId(new InternalCustomValue(code, origin));
-            break;
-
-        case VT_RANGE:
-            CL_BREAK_IF("invalid call of SymHeapCore::Private::valCreate()");
-            // fall through!
-
-        case VT_OBJECT:
-            val = this->assignId(new BaseAddress(code, origin));
             break;
     }
 
@@ -1462,8 +1447,6 @@ void SymHeapCore::Private::transferBlock(
     }
 }
 
-
-
 SymHeapCore::Private::Private(Trace::Node *trace):
     traceHandle (trace),
     liveObjs    (new TObjSetWrapper),
@@ -1473,8 +1456,6 @@ SymHeapCore::Private::Private(Trace::Node *trace):
     coinDb      (new CoincidenceDb),
     neqDb       (new NeqDb)
 {
-    // allocate a root-value for VAL_NULL
-    this->assignId(new BaseAddress(VT_INVALID, VO_INVALID));
 }
 
 SymHeapCore::Private::Private(const SymHeapCore::Private &ref):
@@ -1505,7 +1486,7 @@ SymHeapCore::Private::~Private()
     RefCntLib<RCO_NON_VIRT>::leave(this->neqDb);
 }
 
-TValId SymHeapCore::Private::objInit(TFldId fld)
+TValId SymHeapCore::Private::fldInit(TFldId fld)
 {
     FieldOfObj *fldData;
     this->ents.getEntRW(&fldData, fld);
@@ -1544,12 +1525,7 @@ TValId SymHeapCore::Private::objInit(TFldId fld)
     fldData->value = val;
 
     // mark the object as live
-    if (isDataPtr(clt))
-        rootData->liveFields[fld] = BK_DATA_PTR;
-#if SE_TRACK_NON_POINTER_VALUES
-    else
-        rootData->liveFields[fld] = BK_DATA_OBJ;
-#endif
+    rootData->liveFields[fld] = BK_FIELD;
 
     CL_BREAK_IF(!this->chkArenaConsistency(rootData));
 
@@ -1576,15 +1552,15 @@ TValId SymHeapCore::valueOf(TFldId fld)
             break;
     }
 
-    const FieldOfObj *objData;
-    d->ents.getEntRO(&objData, fld);
+    const FieldOfObj *fldData;
+    d->ents.getEntRO(&fldData, fld);
 
-    TValId val = objData->value;
+    TValId val = fldData->value;
     if (VAL_INVALID != val)
-        // the object has a value
+        // the field has a value
         return val;
 
-    const TObjType clt = objData->clt;
+    const TObjType clt = fldData->clt;
     if (isComposite(clt)) {
         // deleayed creation of a composite value
         val = d->valCreate(VT_COMPOSITE, VO_INVALID);
@@ -1593,17 +1569,17 @@ TValId SymHeapCore::valueOf(TFldId fld)
         compData->compObj = fld;
 
         // store the value
-        FieldOfObj *objDataRW;
-        d->ents.getEntRW(&objDataRW, fld);
-        objDataRW->value = val;
+        FieldOfObj *fldDataRW;
+        d->ents.getEntRW(&fldDataRW, fld);
+        fldDataRW->value = val;
 
         // store backward reference
         compData->usedBy.insert(fld);
         return val;
     }
 
-    // delayed object initialization
-    return d->objInit(fld);
+    // delayed field initialization
+    return d->fldInit(fld);
 }
 
 void SymHeapCore::usedBy(FldList &dst, TValId val, bool liveOnly) const
@@ -1670,47 +1646,6 @@ unsigned SymHeapCore::lastId() const
     return d->ents.lastId<unsigned>();
 }
 
-TValId SymHeapCore::valClone(TValId val)
-{
-    const BaseValue *valData;
-    d->ents.getEntRO(&valData, val);
-
-    const EValueTarget code = valData->code;
-    if (VT_CUSTOM == code) {
-        CL_BREAK_IF("custom values are not supposed to be cloned");
-        return val;
-    }
-
-    if (VT_OBJECT == code && (isProgramVar(
-                    this->objStorClass(this->objByAddr(val)))))
-    {
-        CL_BREAK_IF("program variables are not supposed to be cloned");
-        return val;
-    }
-
-    const TValId root = valData->valRoot;
-    if (VAL_NULL == root) {
-        CL_BREAK_IF("VAL_NULL is not supposed to be cloned");
-        return val;
-    }
-
-    if (VT_RANGE == code) {
-        CL_DEBUG("support for VT_RANGE in valClone() is experimental");
-        const IR::Range range = this->valOffsetRange(val);
-        return this->valByRange(valData->valRoot, range);
-    }
-
-    if (!isAnyDataArea(code))
-        // duplicate an unknown value
-        return d->valDup(val);
-
-    // duplicate a root object
-    const TValId dupAt = d->dupRoot(root);
-
-    // take the offset into consideration
-    return this->valByOffset(dupAt, valData->offRoot);
-}
-
 TFldId SymHeapCore::Private::copySingleLiveBlock(
         const TObjId                objDst,
         Region                     *objDataDst,
@@ -1739,7 +1674,7 @@ TFldId SymHeapCore::Private::copySingleLiveBlock(
     }
     else {
         // duplicate a regular object
-        CL_BREAK_IF(BK_DATA_PTR != code && BK_DATA_OBJ != code);
+        CL_BREAK_IF(BK_FIELD != code);
         CL_BREAK_IF(sizeLimit);
 
         const FieldOfObj *fldDataSrc;
@@ -1756,66 +1691,39 @@ TFldId SymHeapCore::Private::copySingleLiveBlock(
     return dst;
 }
 
-TValId SymHeapCore::Private::dupRoot(TValId rootAt)
+TObjId SymHeapCore::objClone(TObjId obj)
 {
-    CL_DEBUG("SymHeapCore::Private::dupRoot() is taking place...");
-    const BaseAddress *rootValDataSrc;
-    this->ents.getEntRO(&rootValDataSrc, rootAt);
+    CL_DEBUG("SymHeapCore::objClone() is taking place...");
 
     // resolve the src region
-    const Region *rootDataSrc;
-    this->ents.getEntRO(&rootDataSrc, rootValDataSrc->obj);
-    CL_BREAK_IF(!this->chkArenaConsistency(rootDataSrc));
-
-    // assign an address to the clone
-    const EValueTarget code = rootValDataSrc->code;
-    const TValId imageAt = this->valCreate(code, VO_ASSIGNED);
-    BaseAddress *rootValDataDst;
-    this->ents.getEntRW(&rootValDataDst, imageAt);
+    const Region *objDataSrc;
+    d->ents.getEntRO(&objDataSrc, obj);
+    CL_BREAK_IF(!d->chkArenaConsistency(objDataSrc));
 
     // create the cloned object
-    const TObjId reg = this->assignId(new Region(rootDataSrc->code));
-    Region *rootDataDst;
-    this->ents.getEntRW(&rootDataDst, reg);
-
-    // inter-connect the object and its address
-    rootDataDst->rootAddr = imageAt;
-    rootValDataDst->obj = reg;
+    const TObjId dup = d->assignId(new Region(objDataSrc->code));
+    Region *objDataDst;
+    d->ents.getEntRW(&objDataDst, dup);
 
     // duplicate root metadata
-    rootDataDst->cVar               = rootDataSrc->cVar;
-    rootDataDst->size               = rootDataSrc->size;
-    rootDataDst->lastKnownClt       = rootDataSrc->lastKnownClt;
-    rootDataDst->isValid            = rootDataSrc->isValid;
-    rootDataDst->protoLevel         = rootDataSrc->protoLevel;
+    objDataDst->cVar                = objDataSrc->cVar;
+    objDataDst->size                = objDataSrc->size;
+    objDataDst->lastKnownClt        = objDataSrc->lastKnownClt;
+    objDataDst->isValid             = objDataSrc->isValid;
+    objDataDst->protoLevel          = objDataSrc->protoLevel;
 
-    if (rootDataDst->isValid) {
-        RefCntLib<RCO_NON_VIRT>::requireExclusivity(this->liveObjs);
-        this->liveObjs->insert(reg);
+    if (objDataDst->isValid) {
+        RefCntLib<RCO_NON_VIRT>::requireExclusivity(d->liveObjs);
+        d->liveObjs->insert(dup);
     }
 
-    BOOST_FOREACH(TLiveObjs::const_reference item, rootDataSrc->liveFields)
-        this->copySingleLiveBlock(reg, rootDataDst,
+    BOOST_FOREACH(TLiveObjs::const_reference item, objDataSrc->liveFields)
+        d->copySingleLiveBlock(dup, objDataDst,
                 /* src  */ item.first,
                 /* code */ item.second);
 
-    CL_BREAK_IF(!this->chkArenaConsistency(rootDataDst));
-    return imageAt;
-}
-
-void SymHeapCore::gatherLivePointers(FldList &dst, TObjId obj) const
-{
-    const Region *rootData;
-    d->ents.getEntRO(&rootData, obj);
-
-    BOOST_FOREACH(TLiveObjs::const_reference item, rootData->liveFields) {
-        const EBlockKind code = item.second;
-        if (BK_DATA_PTR != code)
-            continue;
-
-        const TFldId fld = item.first;
-        dst.push_back(FldHandle(*const_cast<SymHeapCore *>(this), fld));
-    }
+    CL_BREAK_IF(!d->chkArenaConsistency(objDataDst));
+    return dup;
 }
 
 void SymHeapCore::gatherUniformBlocks(TUniBlockMap &dst, TObjId obj) const
@@ -1853,8 +1761,7 @@ void SymHeapCore::gatherLiveFields(FldList &dst, TObjId obj) const
             case BK_UNIFORM:
                 continue;
 
-            case BK_DATA_PTR:
-            case BK_DATA_OBJ:
+            case BK_FIELD:
                 break;
 
             case BK_INVALID:
@@ -1949,21 +1856,27 @@ SymHeapCore::SymHeapCore(TStorRef stor, Trace::Node *trace):
 {
     CL_BREAK_IF(!&stor_);
 
-    // allocate VAL_ADDR_OF_RET
-    const TValId addrRet = d->valCreate(VT_OBJECT, VO_ASSIGNED);
-    CL_BREAK_IF(VAL_ADDR_OF_RET != addrRet);
-    BaseAddress *addrRetData;
-    d->ents.getEntRW(&addrRetData, addrRet);
+    // allocate the VAL_NULL base address
+    const TValId valNull = d->assignId(new BaseAddress(OBJ_NULL, TS_REGION));
+    CL_BREAK_IF(VAL_NULL != valNull);
+
+    // allocate the VAL_TRUE value
+    const TValId valTrue = d->wrapIntVal(IR::Int1);
+    CL_BREAK_IF(VAL_TRUE != valTrue);
+    (void) valTrue;
+
+    // allocate the OBJ_NULL region and mark it as invalid
+    Region *objNullData = new Region(SC_INVALID);
+    objNullData->addrByTS[TS_REGION] = valNull;
+    objNullData->isValid = false;
+    const TObjId objNull = d->assignId(objNullData);
+    CL_BREAK_IF(OBJ_NULL != objNull);
+    (void) objNull;
 
     // allocate OBJ_RETURN
     const TObjId objRet = d->assignId(new Region(SC_ON_STACK));
     CL_BREAK_IF(OBJ_RETURN != objRet);
-    Region *objRetData;
-    d->ents.getEntRW(&objRetData, objRet);
-
-    // inter-connect VAL_ADDR_OF_RET and OBJ_RETURN
-    objRetData->rootAddr = addrRet;
-    addrRetData-> obj = objRet;
+    (void) objRet;
 }
 
 SymHeapCore::SymHeapCore(const SymHeapCore &ref):
@@ -2139,30 +2052,25 @@ bool SymHeapCore::Private::findZeroInBlock(
     const BlockEntity *blData;
     this->ents.getEntRO(&blData, fld);
 
-    const EBlockKind code = blData->code;
-    switch (code) {
-        case BK_DATA_OBJ:
-            break;
-
-        case BK_DATA_PTR:
-        case BK_UNIFORM:
-            if (VAL_NULL != blData->value)
-                return false;
-
-            // a uniform block full of zeros
-            *offDst = blData->off;
-            return true;
-
-        default:
-            CL_BREAK_IF("findZeroInBlock() got something special");
-            return false;
+    if (VAL_NULL == blData->value) {
+        // a block full of zeros
+        *offDst = blData->off;
+        return true;
     }
 
-    const FieldOfObj *objData = DCAST<const FieldOfObj *>(blData);
-    if (CL_TYPE_ARRAY == objData->clt->code) {
+    const EBlockKind code = blData->code;
+    if (BK_FIELD != code) {
+        if (BK_UNIFORM != code)
+            CL_BREAK_IF("findZeroInBlock() got something special");
+
+        return false;
+    }
+
+    const FieldOfObj *fldData = DCAST<const FieldOfObj *>(blData);
+    if (CL_TYPE_ARRAY == fldData->clt->code) {
         // assume zero-terminated string
         const InternalCustomValue *valData;
-        this->ents.getEntRO(&valData, objData->value);
+        this->ents.getEntRO(&valData, fldData->value);
 
         // check whether the prefix is proven to be non-zero
         const TOffset off = blData->off;
@@ -2245,9 +2153,9 @@ TObjType SymHeapCore::fieldType(TFldId fld) const
     if (fld < 0)
         return 0;
 
-    const FieldOfObj *objData;
-    d->ents.getEntRO(&objData, fld);
-    return objData->clt;
+    const FieldOfObj *fldData;
+    d->ents.getEntRO(&fldData, fld);
+    return fldData->clt;
 }
 
 TValId SymHeapCore::Private::shiftCustomValue(TValId ref, TOffset shift)
@@ -2282,9 +2190,6 @@ TValId SymHeapCore::Private::wrapIntVal(const IR::TInt num)
 {
     if (IR::Int0 == num)
         return VAL_NULL;
-
-    if (IR::Int1 == num)
-        return VAL_TRUE;
 
     // CV_INT values are supposed to be reused if they exist already
     RefCntLib<RCO_NON_VIRT>::requireExclusivity(this->cValueMap);
@@ -2425,10 +2330,9 @@ TValId SymHeapCore::valByRange(TValId at, IR::Range range)
     if (isSingular(range))
         return this->valByOffset(at, range.lo);
 
-    if (VAL_NULL == at || isAddressToFreedObj(*this, at))
+    const TObjId obj = this->objByAddr(at);
+    if (!this->isValid(obj))
         return d->valCreate(VT_UNKNOWN, VO_UNKNOWN);
-
-    CL_BREAK_IF(!isPossibleToDeref(*this, at));
 
     const BaseValue *valData;
     d->ents.getEntRO(&valData, at);
@@ -2649,21 +2553,28 @@ TValId SymHeapCore::addrOfTarget(TObjId obj, ETargetSpecifier ts, TOffset off)
     if (OBJ_INVALID == obj)
         return VAL_INVALID;
 
-    if (TS_REGION != ts || !!off) {
-        CL_BREAK_IF("please implement");
-        return VAL_INVALID;
+    const Region *objDataRO;
+    d->ents.getEntRO(&objDataRO, obj);
+
+    const TAddrByTS &addrByTS = objDataRO->addrByTS;
+    const TAddrByTS::const_iterator it = addrByTS.find(ts);
+
+    TValId base;
+    if (addrByTS.end() == it) {
+        // allocate a fresh base address
+        BaseAddress *baseAddrData = new BaseAddress(obj, ts);
+        base = d->assignId(baseAddrData);
+
+        // register the base address by the target object
+        Region *objDataRW;
+        d->ents.getEntRW(&objDataRW, obj);
+        objDataRW->addrByTS[ts] = base;
     }
+    else
+        // reuse the existing base address
+        base = it->second;
 
-    const Region *regData;
-    d->ents.getEntRO(&regData, obj);
-    return regData->rootAddr;
-}
-
-TValId SymHeapCore::legacyAddrOfAny_XXX(TObjId reg) const
-{
-    const Region *regData;
-    d->ents.getEntRO(&regData, reg);
-    return regData->rootAddr;
+    return this->valByOffset(base, off);
 }
 
 EValueOrigin SymHeapCore::valOrigin(TValId val) const
@@ -2673,7 +2584,6 @@ EValueOrigin SymHeapCore::valOrigin(TValId val) const
             return VO_INVALID;
 
         case VAL_NULL /* = VAL_FALSE */:
-        case VAL_TRUE:
             return VO_ASSIGNED;
 
         default:
@@ -2687,12 +2597,72 @@ EValueOrigin SymHeapCore::valOrigin(TValId val) const
 
 EValueTarget SymHeapCore::valTarget(TValId val) const
 {
-    if (val <= 0)
+    if (val < VAL_NULL)
         return VT_INVALID;
 
     const BaseValue *valData;
     d->ents.getEntRO(&valData, val);
     return valData->code;
+}
+
+ETargetSpecifier SymHeapCore::targetSpec(TValId addr) const
+{
+    if (addr < VAL_NULL)
+        return TS_INVALID;
+
+    const BaseValue *valData;
+    d->ents.getEntRO(&valData, addr);
+
+    if (!isAnyDataArea(valData->code))
+        return TS_INVALID;
+
+    const BaseAddress *rootData;
+    d->ents.getEntRO(&rootData, valData->valRoot);
+    return rootData->ts;
+}
+
+void SymHeapCore::rewriteTargetOfBase(TValId root, TObjId objNew)
+{
+    BaseAddress *rootData;
+    d->ents.getEntRW(&rootData, root);
+    const TObjId objOld = rootData->obj;
+
+    // rewrite the target object
+    CL_BREAK_IF(objOld == objNew);
+    rootData->obj = objNew;
+
+    // resolve old/new object data
+    Region *regDataOld, *regDataNew;
+    d->ents.getEntRW(&regDataOld, objOld);
+    d->ents.getEntRW(&regDataNew, objNew);
+
+    // move the address from objOld to objNew
+    const ETargetSpecifier ts = rootData->ts;
+    CL_BREAK_IF(hasKey(regDataNew->addrByTS, ts));
+    if (!regDataOld->addrByTS.erase(ts))
+        CL_BREAK_IF("internal error in rewriteTargetOfBase");
+    regDataNew->addrByTS[ts] = root;
+
+    // go through fields pointing to objOld
+    TFldIdSet unrelatedFlds;
+    BOOST_FOREACH(const TFldId fld, regDataOld->usedByGl) {
+        // read value of the field
+        const FieldOfObj *fldData;
+        d->ents.getEntRO(&fldData, fld);
+        const TValId val = fldData->value;
+
+        // resolve base address
+        const BaseValue *valData;
+        d->ents.getEntRO(&valData, val);
+        if (valData->valRoot == root)
+            // reference moved
+            regDataNew->usedByGl.insert(fld);
+        else
+            unrelatedFlds.insert(fld);
+    }
+
+    // write unmoved field IDs
+    regDataOld->usedByGl.swap(unrelatedFlds);
 }
 
 bool isUninitialized(EValueOrigin code)
@@ -2737,7 +2707,7 @@ bool isAnyDataArea(EValueTarget code)
 }
 
 TObjId SymHeapCore::objByAddr(TValId val) const {
-    if (val <= VAL_NULL)
+    if (val < VAL_NULL)
         return OBJ_INVALID;
 
     const BaseValue *valData;
@@ -2903,7 +2873,7 @@ void SymHeapCore::copyRelevantPreds(SymHeapCore &dst, const TValMap &valMap)
 
     // go through CoincidenceDb
     const CoincidenceDb &coinDb = *d->coinDb;
-    BOOST_FOREACH(CoincidenceDb::const_reference &ref, coinDb) {
+    BOOST_FOREACH(CoincidenceDb::const_reference ref, coinDb) {
         TValId valLt = ref/* key */.first/* lt */.first;
         TValId valGt = ref/* key */.first/* gt */.second;
 
@@ -2953,7 +2923,7 @@ bool SymHeapCore::matchPreds(
 
     // go through CoincidenceDb
     const CoincidenceDb &coinDb = *d->coinDb;
-    BOOST_FOREACH(CoincidenceDb::const_reference &ref, coinDb) {
+    BOOST_FOREACH(CoincidenceDb::const_reference ref, coinDb) {
         TValId valLt = ref/* key */.first/* lt */.first;
         TValId valGt = ref/* key */.first/* gt */.second;
 
@@ -3015,12 +2985,7 @@ TValId SymHeapCore::placedAt(TFldId fld)
     d->ents.getEntRO(&fldData, fld);
     const TObjId obj = fldData->obj;
 
-    // read object data
-    const Region *objData;
-    d->ents.getEntRO(&objData, obj);
-
-    // then subtract the offset
-    return this->valByOffset(objData->rootAddr, fldData->off);
+    return this->addrOfTarget(obj, TS_REGION, fldData->off);
 }
 
 TFldId SymHeapCore::Private::fldLookup(
@@ -3058,8 +3023,7 @@ TFldId SymHeapCore::Private::fldLookup(
 
         const EBlockKind code = blData->code;
         switch (code) {
-            case BK_DATA_PTR:
-            case BK_DATA_OBJ:
+            case BK_FIELD:
             case BK_COMPOSITE:
                 break;
 
@@ -3068,8 +3032,8 @@ TFldId SymHeapCore::Private::fldLookup(
         }
 
         const bool isLive = hasKey(rootData->liveFields, fld);
-        const FieldOfObj *objData = DCAST<const FieldOfObj *>(blData);
-        if (!/* continue */policy->matchBlock(fld, objData, isLive))
+        const FieldOfObj *fldData = DCAST<const FieldOfObj *>(blData);
+        if (!/* continue */policy->matchBlock(fld, fldData, isLive))
             break;
     }
 
@@ -3144,10 +3108,10 @@ class FieldMatchPolicy: public IMatchPolicy {
 
 bool FieldMatchPolicy::matchBlock(
         TFldId                      fld,
-        const FieldOfObj           *objData,
+        const FieldOfObj           *fldData,
         bool                        isLive)
 {
-    const TObjType cltNow = objData->clt;
+    const TObjType cltNow = fldData->clt;
     if (cltNow == cltToMatch_) {
         // exact match
         cltExactMatch_ = true;
@@ -3228,9 +3192,9 @@ CVar SymHeapCore::cVarByObject(TObjId obj) const
 
 TObjId SymHeapCore::regionByVar(CVar cv, bool createIfNeeded)
 {
-    TValId addr = d->cVarMap->find(cv);
-    if (0 < addr)
-        return this->objByAddr(addr);
+    TObjId obj = d->cVarMap->find(cv);
+    if (OBJ_INVALID != obj)
+        return obj;
 
     if (!createIfNeeded)
         // the variable does not exist and we are not asked to create the var
@@ -3249,21 +3213,11 @@ TObjId SymHeapCore::regionByVar(CVar cv, bool createIfNeeded)
     CL_DEBUG_MSG(loc, "FFF SymHeapCore::addrOfVar() creates var " << varString);
 #endif
 
-    // assign an address
-    addr = d->valCreate(VT_OBJECT, VO_ASSIGNED);
-
-    BaseAddress *rootAddrData;
-    d->ents.getEntRW(&rootAddrData, addr);
-
     // create an object
     const EStorageClass code = isOnStack(var) ? SC_ON_STACK : SC_STATIC;
-    const TObjId reg = d->assignId(new Region(code));
+    obj = d->assignId(new Region(code));
     Region *rootData;
-    d->ents.getEntRW(&rootData, reg);
-
-    // inter-connect the object and its address
-    rootData->rootAddr = addr;
-    rootAddrData->obj = reg;
+    d->ents.getEntRW(&rootData, obj);
 
     // initialize metadata
     rootData->cVar = cv;
@@ -3275,12 +3229,12 @@ TObjId SymHeapCore::regionByVar(CVar cv, bool createIfNeeded)
 
     // mark the root as live
     RefCntLib<RCO_NON_VIRT>::requireExclusivity(d->liveObjs);
-    d->liveObjs->insert(reg);
+    d->liveObjs->insert(obj);
 
     // store the address for next wheel
     RefCntLib<RCO_NON_VIRT>::requireExclusivity(d->cVarMap);
-    d->cVarMap->insert(cv, addr);
-    return this->objByAddr(addr);
+    d->cVarMap->insert(cv, obj);
+    return obj;
 }
 
 static bool dummyFilter(EStorageClass)
@@ -3333,23 +3287,14 @@ TFldId SymHeapCore::valGetComposite(TValId val) const
     return compData->compObj;
 }
 
-TValId SymHeapCore::stackAlloc(const TSizeRange &size, const CallInst &from)
+TObjId SymHeapCore::stackAlloc(const TSizeRange &size, const CallInst &from)
 {
     CL_BREAK_IF(size.lo <= IR::Int0);
-
-    // assign an address
-    const TValId addr = d->valCreate(VT_OBJECT, VO_ASSIGNED);
-    BaseAddress *rootAddrData;
-    d->ents.getEntRW(&rootAddrData, addr);
 
     // create an object
     const TObjId reg = d->assignId(new Region(SC_ON_STACK));
     Region *rootData;
     d->ents.getEntRW(&rootData, reg);
-
-    // inter-connect the object and its address
-    rootData->rootAddr = addr;
-    rootAddrData->obj = reg;
 
     // initialize meta-data
     rootData->size = size;
@@ -3358,26 +3303,17 @@ TValId SymHeapCore::stackAlloc(const TSizeRange &size, const CallInst &from)
     RefCntLib<RCO_NON_VIRT>::requireExclusivity(d->anonStackMap);
     (*d->anonStackMap)[from].push_back(reg);
 
-    return addr;
+    return reg;
 }
 
 TObjId SymHeapCore::heapAlloc(const TSizeRange &size)
 {
     CL_BREAK_IF(size.lo < IR::Int0);
 
-    // assign an address
-    const TValId addr = d->valCreate(VT_OBJECT, VO_ASSIGNED);
-    BaseAddress *rootAddrData;
-    d->ents.getEntRW(&rootAddrData, addr);
-
     // create an object
     const TObjId reg = d->assignId(new Region(SC_ON_HEAP));
     Region *rootData;
     d->ents.getEntRW(&rootData, reg);
-
-    // inter-connect the object and its address
-    rootData->rootAddr = addr;
-    rootAddrData->obj = reg;
 
     // mark the root as live
     RefCntLib<RCO_NON_VIRT>::requireExclusivity(d->liveObjs);
@@ -3390,7 +3326,7 @@ TObjId SymHeapCore::heapAlloc(const TSizeRange &size)
 }
 
 bool SymHeapCore::isValid(TObjId obj) const {
-    if (OBJ_INVALID == obj)
+    if (!d->ents.isValidEnt(obj))
         return false;
 
     const Region *regData;
@@ -3573,8 +3509,8 @@ const CustomValue& SymHeapCore::valUnwrapCustom(TValId val) const
         if (!isSingular(rng))
             return cv;
 
-        // VAL_FALSE/VAL_TRUE are not supposed to be wrapped as custom values
-        CL_BREAK_IF(IR::Int0 == rng.lo || IR::Int1 == rng.lo);
+        // VAL_FALSE is not supposed to be wrapped as custom values
+        CL_BREAK_IF(IR::Int0 == rng.lo);
     }
 
     // check the consistency of backward mapping
@@ -3660,6 +3596,10 @@ SymHeap& SymHeap::operator=(const SymHeap &ref)
     RefCntLib<RCO_NON_VIRT>::leave(d);
 
     d = ref.d;
+#if defined(__GNUC_MINOR__) && (__GNUC__ == 4) && (__GNUC_MINOR__ == 1)
+    // work around optimization bug <https://bugzilla.redhat.com/917378>
+    asm volatile("" ::: "memory");
+#endif
     RefCntLib<RCO_NON_VIRT>::enter(d);
 
     return *this;
@@ -3675,13 +3615,9 @@ void SymHeap::swap(SymHeapCore &baseRef)
     swapValues(this->d, ref.d);
 }
 
-TValId SymHeap::valClone(TValId val)
+TObjId SymHeap::objClone(TObjId obj)
 {
-    const TValId dup = SymHeapCore::valClone(val);
-    if (dup <= 0 || VT_RANGE == this->valTarget(val))
-        return dup;
-
-    const TObjId obj = this->objByAddr(val);
+    const TObjId dup = SymHeapCore::objClone(obj);
     if (!d->absRoots.isValidEnt(obj))
         return dup;
 
@@ -3689,9 +3625,8 @@ TValId SymHeap::valClone(TValId val)
 
     // clone the data
     const AbstractObject *tplData = d->absRoots.getEntRO(obj);
-    const TObjId dupObj = this->objByAddr(dup);
     AbstractObject *dupData = tplData->clone();
-    d->absRoots.assignId(dupObj, dupData);
+    d->absRoots.assignId(dup, dupData);
 
     return dup;
 }
@@ -3715,7 +3650,7 @@ const BindingOff& SymHeap::segBinding(TObjId seg) const
 void SymHeap::objSetAbstract(
         TObjId                      obj,
         EObjKind                    kind,
-        const BindingOff            &off)
+        const BindingOff           &off)
 {
     CL_BREAK_IF(OK_REGION == kind);
 
@@ -3724,15 +3659,11 @@ void SymHeap::objSetAbstract(
 
     RefCntLib<RCO_NON_VIRT>::requireExclusivity(d);
 
-    // clone the data
     if (d->absRoots.isValidEnt(obj)) {
-        CL_BREAK_IF(OK_SLS != kind);
-
+        // the object already exists, just update its properties
         AbstractObject *aData = d->absRoots.getEntRW(obj);
-        CL_BREAK_IF(OK_SEE_THROUGH != aData->kind || off != aData->bOff);
-
-        // OK_SEE_THROUGH -> OK_SLS
         aData->kind = kind;
+        aData->bOff = off;
         return;
     }
 
@@ -3750,15 +3681,7 @@ void SymHeap::objSetConcrete(TObjId obj)
     RefCntLib<RCO_NON_VIRT>::requireExclusivity(d);
 
     // unregister an abstract object
-    // FIXME: suboptimal code of EntStore::releaseEnt() with SH_REUSE_FREE_IDS
     d->absRoots.releaseEnt(obj);
-}
-
-/// overridden just to catch possible misuse of the method
-TValId SymHeap::addrOfTarget(TObjId obj, ETargetSpecifier ts, TOffset off)
-{
-    // TODO: check possible misuse once we actually start to use it correctly
-    return SymHeapCore::addrOfTarget(obj, ts, off);
 }
 
 void SymHeap::objInvalidate(TObjId obj)
@@ -3772,7 +3695,6 @@ void SymHeap::objInvalidate(TObjId obj)
     RefCntLib<RCO_NON_VIRT>::requireExclusivity(d);
 
     // unregister an abstract object
-    // FIXME: suboptimal code of EntStore::releaseEnt() with SH_REUSE_FREE_IDS
     d->absRoots.releaseEnt(obj);
 }
 

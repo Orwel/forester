@@ -24,6 +24,7 @@
 #include <cl/storage.hh>
 
 #include "plotenum.hh"
+#include "symstate.hh"
 #include "worklist.hh"
 
 #include <algorithm>
@@ -79,8 +80,12 @@ void Node::notifyDeath(NodeBase *child)
 
 void NodeHandle::reset(Node *node)
 {
-    // release the old node
     Node *&ref = parents_.front();
+    if (ref == node)
+        // if the node is already in, protect it against accidental deallocation
+        return;
+
+    // release the old node
     ref->notifyDeath(this);
 
     // register the new node
@@ -183,7 +188,8 @@ void AbstractionNode::plotNode(TracePlotter &tplot) const
 
     tplot.out << "\t" << SL_QUOTE(this)
         << " [shape=ellipse, color=red, fontcolor=red, label="
-        << SL_QUOTE(label) << "];\n";
+        << SL_QUOTE(label) << ", tooltip="
+        << SL_QUOTE(name_) << "];\n";
 }
 
 void ConcretizationNode::plotNode(TracePlotter &tplot) const
@@ -191,7 +197,8 @@ void ConcretizationNode::plotNode(TracePlotter &tplot) const
     // TODO: kind_
     tplot.out << "\t" << SL_QUOTE(this)
         << " [shape=ellipse, color=red, fontcolor=blue, label="
-        << SL_QUOTE("concretizeObj()") << "];\n";
+        << SL_QUOTE("concretizeObj()") << ", tooltip="
+        << SL_QUOTE(name_) << "];\n";
 }
 
 void SpliceOutNode::plotNode(TracePlotter &tplot) const
@@ -244,6 +251,12 @@ void CallDoneNode::plotNode(TracePlotter &tplot) const
         << " [shape=box, fontname=monospace, color=blue, fontcolor=blue"
         ", penwidth=3.0, label=\"<-- call done: "
         << (nameOf(*fnc_)) << "()\"];\n";
+}
+
+void ImportGlVarNode::plotNode(TracePlotter &tplot) const
+{
+    tplot.out << "\t" << SL_QUOTE(this) << " [shape=ellipse, color=red"
+        ", fontcolor=red, label=\"importGlVar(" << varString_ << ")\"];\n";
 }
 
 void CondNode::plotNode(TracePlotter &tplot) const
@@ -333,11 +346,15 @@ void plotTraceCore(TracePlotter &tplot)
 }
 
 // FIXME: copy-pasted from symplot.cc
-bool plotTrace(const std::string &name, TWorkList &wl)
+bool plotTrace(const std::string &name, TWorkList &wl, std::string *pName = 0)
 {
     PlotEnumerator *pe = PlotEnumerator::instance();
     std::string plotName(pe->decorate(name));
     std::string fileName(plotName + ".dot");
+
+    if (pName)
+        // propagate the resulting name back to the caller
+        *pName = plotName;
 
     // create a dot file
     std::fstream out(fileName.c_str(), std::ios::out);
@@ -369,15 +386,15 @@ bool plotTrace(const std::string &name, TWorkList &wl)
     return !!out;
 }
 
-bool plotTrace(Node *endPoint, const std::string &name)
+bool plotTrace(Node *endPoint, const std::string &name, std::string *pName)
 {
     const TNodePair item(/* from */ endPoint, /* to */ nullNode);
     TWorkList wl(item);
-    return plotTrace(name, wl);
+    return plotTrace(name, wl, pName);
 }
 
 // /////////////////////////////////////////////////////////////////////////////
-// implementation of Trace::plotTrace()
+// implementation of Trace::printTrace()
 Node* /* selected predecessor */ TransientNode::printNode() const
 {
     CL_BREAK_IF("please implement");
@@ -393,12 +410,6 @@ Node* /* selected predecessor */ RootNode::printNode() const
 Node* /* selected predecessor */ InsnNode::printNode() const
 {
     // TODO: handle selected instructions here?
-    return this->parent();
-}
-
-Node* /* selected predecessor */ SpliceOutNode::printNode() const
-{
-    CL_BREAK_IF("please implement");
     return this->parent();
 }
 
@@ -642,5 +653,10 @@ void waiveCloneOperation(SymHeap &sh)
     sh.traceUpdate(cnode->parent());
 }
 
+void waiveCloneOperation(SymState &state)
+{
+    BOOST_FOREACH(SymHeap *sh, state)
+        Trace::waiveCloneOperation(*sh);
+}
 
 } // namespace Trace

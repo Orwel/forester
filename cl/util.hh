@@ -20,14 +20,21 @@
 #ifndef H_GUARD_UTIL_H
 #define H_GUARD_UTIL_H
 
+#include <algorithm>                // for std::find()
 #include <cstring>
-#include <tuple>
 
 #ifndef STREQ
 #   define STREQ(s1, s2) (0 == strcmp(s1, s2))
 #endif
 
 #define FIXW(w) std::fixed << std::setfill('0') << std::setw(w)
+
+#define RETURN_IF_COMPARED(a, b, member) do {   \
+    if (a.member < b.member)                    \
+        return true;                            \
+    if (b.member < a.member)                    \
+        return false;                           \
+} while (0)
 
 template <typename T>
 void swapValues(T &a, T &b)
@@ -43,6 +50,12 @@ void sortValues(T &a, T &b)
 {
     if (b < a)
         swapValues(a, b);
+}
+
+template <typename TCont>
+bool hasItem(const TCont &cont, const typename TCont::value_type &key)
+{
+    return cont.end() != std::find(cont.begin(), cont.end(), key);
 }
 
 template <typename TCont>

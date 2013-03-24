@@ -18,6 +18,7 @@
  */
 
 // Forester headers
+#include "executionmanager.hh"
 #include "sequentialinstruction.hh"
 #include "jump.hh"
 
@@ -34,4 +35,26 @@ void SequentialInstruction::finalize(
 
 		this->next_ = static_cast<FI_jmp*>(this->next_)->getTarget(codeIndex);
 	}
+}
+
+SymState* RegisterAssignment::reverseAndIsect(
+	ExecutionManager&                      execMan,
+	const SymState&                        fwdPred,
+	const SymState&                        bwdSucc) const
+{
+	// copy the previous value of register dstReg_ 
+	SymState* tmpState = execMan.copyStateWithNewRegs(bwdSucc, fwdPred.GetInstr());
+	tmpState->SetReg(dstReg_, fwdPred.GetReg(dstReg_));
+
+	return tmpState;
+}
+
+SymState* VoidInstruction::reverseAndIsect(
+	ExecutionManager&                      execMan,
+	const SymState&                        fwdPred,
+	const SymState&                        bwdSucc) const
+{
+	(void)fwdPred;
+
+	return execMan.copyState(bwdSucc);
 }

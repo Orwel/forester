@@ -44,43 +44,52 @@ struct Index
 		map{}
 	{ }
 
-	typename Index<T>::iterator begin() const {
+	typename Index<T>::iterator begin() const
+	{
 		return this->map.begin();
 	}
 
-	typename Index<T>::iterator end() const {
+	typename Index<T>::iterator end() const
+	{
 		return this->map.end();
 	}
 
-	void clear() {
+	void clear()
+	{
 		this->map.clear();
 	}
 
-	void set(const T& x, size_t v) {
+	void set(const T& x, size_t v)
+	{
 		if (!this->map.insert(std::make_pair(x, v)).second)
 			throw std::runtime_error("Index::set() : value already exists");
 	}
 
-	size_t get(const T& x, size_t offset = 0) {
+	size_t get(const T& x, size_t offset = 0)
+	{
 		return this->map.insert(std::make_pair(x, this->map.size() + offset)).first->second;
 	}
 
-	bool add(const T& x, size_t offset = 0) {
+	bool add(const T& x, size_t offset = 0)
+	{
 		return this->map.insert(std::make_pair(x, this->map.size() + offset)).second;
 	}
 
-	size_t size() const {
+	size_t size() const
+	{
 		return this->map.size();
 	}
 
-	std::pair<size_t, bool> find(const T& x) const {
+	std::pair<size_t, bool> find(const T& x) const
+	{
 		typename map_type::const_iterator i = this->map.find(x);
 		if (i == this->map.end())
 			return std::make_pair(0, false);
 		return std::make_pair(i->second, true);
 	}
 
-	size_t translate(const T& x) const {
+	size_t translate(const T& x) const
+	{
 		typename map_type::const_iterator i = this->map.find(x);
 		if (i == this->map.end())
 			throw std::runtime_error("Index::translate() : lookup failed");
@@ -88,60 +97,77 @@ struct Index
 	}
 
 	// HACK: better keep this static (not virtual)
-	size_t translateOTF(const T& x) {
+	size_t translateOTF(const T& x)
+	{
 		return this->map.insert(std::make_pair(x, this->map.size())).first->second;
 	}
 
-	size_t operator[](const T& x) const {
+	size_t operator[](const T& x) const
+	{
 		return this->translate(x);
 	}
 
-	void translate(std::vector<size_t>& dst, const std::vector<T>& src, size_t offset = 0) const {
+	void translate(
+		std::vector<size_t>&       dst,
+		const std::vector<T>&      src,
+		size_t                     offset = 0) const
+	{
 		dst.clear();
 		for (typename std::vector<T>::const_iterator i = src.begin(); i != src.end(); ++i)
 			dst.push_back(this->translate(*i) + offset);
 	}
 
-	void translateOTF(std::vector<size_t>& dst, const std::vector<T>& src, size_t offset = 0) {
+	void translateOTF(
+		std::vector<size_t>&       dst,
+		const std::vector<T>&      src,
+		size_t                     offset = 0)
+	{
 		dst.clear();
 		for (typename std::vector<T>::const_iterator i = src.begin(); i != src.end(); ++i)
 			dst.push_back(this->translateOTF(*i) + offset);
 	}
 
-	friend std::ostream& operator<<(std::ostream& os, const Index<T>& x) {
+	friend std::ostream& operator<<(std::ostream& os, const Index<T>& x)
+	{
 		os << '[';
 		for (typename map_type::const_iterator i = x.begin(); i != x.end(); ++i)
 			os << '(' << i->first << ',' << i->second << ')';
 		return os << ']';
 	}
-
 };
 
 template <class T>
-struct FullIndex : public Index<T> {
-
+struct FullIndex : public Index<T>
+{
 	std::vector<T> index;
 
-	void clear() {
+	void clear()
+	{
 		Index<T>::clear();
 		this->index.clear();
 	}
 
-	size_t add(const T& x) {
+	size_t add(const T& x)
+	{
 		std::pair<typename Index<T>::map_type::iterator, bool> y = this->map.insert(std::make_pair(x, this->map.size()));
 		if (y.second)
 			this->index.push_back(x);
 		return y.first->second;
 	}
 
-	size_t translateOTF(const T& x) {
+	size_t translateOTF(const T& x)
+	{
 		std::pair<typename Index<T>::map_type::iterator, bool> y = this->map.insert(std::make_pair(x, this->map.size()));
 		if (y.second)
 			this->index.push_back(x);
 		return y.first->second;
 	}
 
-	void translateOTF(std::vector<size_t>& dst, const std::vector<T>& src, size_t offset = 0) {
+	void translateOTF(
+		std::vector<size_t>&       dst,
+		const std::vector<T>&      src,
+		size_t                     offset = 0)
+	{
 		dst.clear();
 		for (typename std::vector<T>::const_iterator i = src.begin(); i != src.end(); ++i)
 			dst.push_back(this->translateOTF(*i) + offset);
@@ -273,45 +299,74 @@ class utils {
 
 public:
 
-	// build equivalence classes
-	static void relBuildClasses(const std::vector<std::vector<bool> >& rel, std::vector<size_t>& headIndex) {
+	/**
+	 * @brief  Builds equivalence classes for a relation
+	 *
+	 * This method builds equivalence classes for a given relation @p rel. In
+	 * particular, it fills up @p headIndex, which is a vector where for each
+	 * element @p x in @p rel, there is the index of the first element in @p rel
+	 * such that it is equivalent to @p x.
+	 *
+	 * @param[in]  rel        The relation for which the equivalence classes are
+	 *                        computed
+	 * @param[out] headIndex  The index where each element in @p rel is associated
+	 *                        with the index of the first equivalent element
+	 */
+	static void relBuildClasses(
+		const std::vector<std::vector<bool>>&        rel,
+		std::vector<size_t>&                         headIndex)
+	{
 		headIndex.resize(rel.size());
 		std::vector<size_t> head;
-		for (size_t i = 0; i < rel.size(); ++i) {
+		for (size_t i = 0; i < rel.size(); ++i)
+		{
 			bool found = false;
-			for (size_t j = 0; j < head.size(); ++j) {
-				if (rel[i][head[j]] && rel[head[j]][i]) {
+			for (size_t j = 0; j < head.size(); ++j)
+			{
+				if (rel[i][head[j]] && rel[head[j]][i])
+				{
 					headIndex[i] = head[j];
 					found = true;
 					break;
 				}
 			}
-			if (!found) {
+			if (!found)
+			{
 				headIndex[i] = i;
 				head.push_back(i);
 			}
 		}
 	}
 
+#if 0
 	// build equivalence classes
-	static void relBuildClasses(const std::vector<std::vector<bool> >& rel, std::vector<size_t>& index, std::vector<size_t>& head) {
+	static void relBuildClasses(
+		const std::vector<std::vector<bool>>&  rel,
+		std::vector<size_t>&                   index,
+		std::vector<size_t>&                   head)
+	{
 		index.resize(rel.size());
 		head.clear();
-		for (size_t i = 0; i < rel.size(); ++i) {
+		for (size_t i = 0; i < rel.size(); ++i)
+		{
 			bool found = false;
-			for (size_t j = 0; j < head.size(); ++j) {
-				if (rel[i][head[j]] && rel[head[j]][i]) {
+			for (size_t j = 0; j < head.size(); ++j)
+			{
+				if (rel[i][head[j]] && rel[head[j]][i])
+				{
 					index[i] = j;
 					found = true;
 					break;
 				}
 			}
-			if (!found) {
+			if (!found)
+			{
 				index[i] = head.size();
 				head.push_back(i);
 			}
 		}
 	}
+#endif
 
 	// and composition
 	static void relAnd(std::vector<std::vector<bool> >& dst, const std::vector<std::vector<bool> >& src1, const std::vector<std::vector<bool> >& src2) {
@@ -412,7 +467,7 @@ public:
 			if (*f1 < *f2)
 				return false;
 			if (*f1 == *f2)
-				++f1; 
+				++f1;
 		}
 		return true;
 	}

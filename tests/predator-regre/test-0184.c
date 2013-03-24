@@ -1,19 +1,19 @@
 #include <stdlib.h>
 
-extern int ___sl_get_nondet_int(void);
+extern int __VERIFIER_nondet_int(void);
 
 static void fail(void) {
 ERROR:
     goto ERROR;
 }
 
-#define ___SL_ASSERT(cond) do {     \
+#define __VERIFIER_assert(cond) do {     \
     if (!(cond))                    \
         fail();                     \
 } while (0)
 
 #ifndef PREDATOR
-#   define ___sl_plot(...) do { } while (0)
+#   define __VERIFIER_plot(...) do { } while (0)
 #endif
 
 struct node {
@@ -45,18 +45,18 @@ static struct node* create_sll(const struct node **pp1, const struct node **pp2)
 
     do
         chain_node(&list);
-    while (___sl_get_nondet_int());
+    while (__VERIFIER_nondet_int());
 
     *pp2 = list;
 
-    while (___sl_get_nondet_int())
+    while (__VERIFIER_nondet_int())
         chain_node(&list);
 
     *pp1 = list;
 
     do
         chain_node(&list);
-    while (___sl_get_nondet_int());
+    while (__VERIFIER_nondet_int());
 
     return list;
 }
@@ -90,19 +90,19 @@ void remove_fw_link(struct node *list) {
 }
 
 void check_seq_next(const struct node *beg, const struct node *const end) {
-    ___SL_ASSERT(beg);
-    ___SL_ASSERT(end);
+    __VERIFIER_assert(beg);
+    __VERIFIER_assert(end);
 
     for (beg = beg->next; end != beg; beg = beg->next)
-        ___SL_ASSERT(beg);
+        __VERIFIER_assert(beg);
 }
 
 void check_seq_prev(const struct node *beg, const struct node *const end) {
-    ___SL_ASSERT(beg);
-    ___SL_ASSERT(end);
+    __VERIFIER_assert(beg);
+    __VERIFIER_assert(end);
 
     for (beg = beg->prev; end != beg; beg = beg->prev)
-        ___SL_ASSERT(beg);
+        __VERIFIER_assert(beg);
 }
 
 int main()
@@ -110,23 +110,23 @@ int main()
     const struct node *p1, *p2;
 
     struct node *list = create_sll(&p1, &p2);
-    ___sl_plot(NULL, &list, &p1, &p2);
+    __VERIFIER_plot(NULL, &list, &p1, &p2);
     check_seq_next(p1, p2);
-    ___SL_ASSERT(!p1->prev);
-    ___SL_ASSERT(!p2->prev);
+    __VERIFIER_assert(!p1->prev);
+    __VERIFIER_assert(!p2->prev);
 
     init_back_link(list);
-    ___sl_plot(NULL, &list, &p1, &p2);
+    __VERIFIER_plot(NULL, &list, &p1, &p2);
     check_seq_next(p1, p2);
     check_seq_prev(p2, p1);
 
     reverse_dll(list);
-    ___sl_plot(NULL, &list, &p1, &p2);
+    __VERIFIER_plot(NULL, &list, &p1, &p2);
     check_seq_prev(p1, p2);
     check_seq_next(p2, p1);
 
     remove_fw_link(list);
-    ___sl_plot(NULL, &list, &p1, &p2);
+    __VERIFIER_plot(NULL, &list, &p1, &p2);
     check_seq_prev(p1, p2);
 
     while (list) {

@@ -21,7 +21,7 @@ CTEST ?= ctest
 .PHONY: all check clean cppcheck distclean distcheck fast version.h
 
 all: version.h ../cl_build/Makefile
-	# make sure the libcl.so is up2date
+	# make sure that libcl.a is up2date
 	$(MAKE) -C ../cl_build
 	mkdir -p ../sl_build
 	cd ../sl_build && $(CMAKE) ../sl
@@ -37,8 +37,9 @@ check: all
 	cd ../sl_build && $(CTEST) --output-on-failure
 
 cppcheck: all
-	cppcheck --enable=style,performance,portability,information,missingInclude \
-		--template gcc -j5 --inline-suppr .
+	cppcheck -j5 --inline-suppr \
+		--enable=style,performance,portability,information,missingInclude \
+		--template '{file}:{line}: {severity}: {id}: {message}' .
 
 version.h:
 	@if test -e ../.git; then \

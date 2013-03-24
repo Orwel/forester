@@ -15,23 +15,16 @@ usage(){
 
 PRUNE_ALWAYS=".git tests/linux-drivers \
 build-aux/make-tgz.sh \
+build-aux/README-fedora-release.patch \
 build-aux/README-ubuntu-release.patch \
-build-aux/cl-readme.patch \
-build-aux/sl-readme.patch \
-build-aux/cl-config.patch \
-build-aux/cl-switch-host.patch \
-build-aux/sl-switch-host.patch \
 build-aux/make-srpm.sh \
 build-aux/update-comments-in-tests.sh \
-build-aux/README-fedora-release.patch \
 sl/rank.sh"
 
 chlog_watch=
 drop_fwnull=no
 drop_fa=no
 drop_sl=no
-readme_cl=no
-readme_sl=no
 
 PROJECT="$1"
 case "$PROJECT" in
@@ -39,7 +32,6 @@ case "$PROJECT" in
         chlog_watch="cl fwnull"
         drop_fa=yes
         drop_sl=yes
-        readme_cl=yes
         ;;
 
     forester)
@@ -51,7 +43,6 @@ case "$PROJECT" in
     predator)
         chlog_watch="sl"
         drop_fa=yes
-        readme_sl=yes
         ;;
 
     *)
@@ -103,19 +94,9 @@ make version.h -C sl        || die "failed to create sl/version.h"
 make ChangeLog "CHLOG_WATCH=$chlog_watch" \
     || die "failed to generate ChangeLog"
 
-# adapt README
-if test xyes = "x$readme_cl"; then
-    patch README < "build-aux/cl-readme.patch"
-    patch "switch-host-gcc.sh" < "build-aux/cl-switch-host.patch"
-fi
-
-# adapt README-ubuntu
-if test xyes = "x$readme_sl"; then
-    patch README < "build-aux/sl-readme.patch"
-    patch docs/README-fedora < "build-aux/README-fedora-release.patch"
-    patch docs/README-ubuntu < "build-aux/README-ubuntu-release.patch"
-    patch "switch-host-gcc.sh" < "build-aux/sl-switch-host.patch"
-fi
+# adapt README-{fedora,ubuntu}
+patch docs/README-fedora < "build-aux/README-fedora-release.patch"
+patch docs/README-ubuntu < "build-aux/README-ubuntu-release.patch"
 
 # adapt Makefile
 case "$PROJECT" in
@@ -148,10 +129,7 @@ esac
 rm -rf $PRUNE_ALWAYS
 test xyes = "x$drop_fwnull" && rm -rf fwnull
 test xyes = "x$drop_fa" && rm -rf fa
-test xyes = "x$drop_sl" && rm -rf sl    \
-    "README-sv-comp-TACAS-2012"         \
-    "chk-error-label-reachability.sh"   \
-    "register-paths.sh"
+test xyes = "x$drop_sl" && rm -rf sl "README-sv-comp-TACAS-2013"
 
 # make a tarball
 cd ..
