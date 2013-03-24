@@ -17,24 +17,39 @@
  * along with forester.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <cl/cldebug.hh>
-
-#include "executionmanager.hh"
-
+// Forester headers
 #include "call.hh"
+#include "executionmanager.hh"
+#include "streams.hh"
 
 // FI_ret
-void FI_ret::execute(ExecutionManager& execMan, const ExecState& state)
+void FI_ret::execute(ExecutionManager& execMan, SymState& state)
 {
 	// Assertions
 	assert(state.GetReg(dst_).isNativePtr());
-	assert(static_cast<AbstractInstruction*>(state.GetReg(dst_).d_native_ptr));
+	assert(nullptr != static_cast<AbstractInstruction*>(state.GetReg(dst_).d_native_ptr));
 
-	execMan.enqueue(state, static_cast<AbstractInstruction*>(state.GetReg(dst_).d_native_ptr));
+	SymState* tmpState = execMan.createChildState(state,
+		static_cast<AbstractInstruction*>(state.GetReg(dst_).d_native_ptr));
+
+	execMan.enqueue(tmpState);
 }
 
-void FI_ret::finalize(
-	const std::unordered_map<const CodeStorage::Block*, AbstractInstruction*>&,
-	std::vector<AbstractInstruction*>::const_iterator
-)
-{ }
+
+SymState* FI_ret::reverseAndIsect(
+	ExecutionManager&                      execMan,
+	const SymState&                        fwdPred,
+	const SymState&                        bwdSucc) const
+{
+	(void)fwdPred;
+
+	// Assertions
+	assert(bwdSucc.GetReg(dst_).isNativePtr());
+	assert(nullptr != static_cast<AbstractInstruction*>(bwdSucc.GetReg(dst_).d_native_ptr));
+	assert(fwdPred.GetReg(dst_) == bwdSucc.GetReg(dst_));
+
+	SymState* tmpState = execMan.copyState(bwdSucc);
+
+	return tmpState;
+}
+

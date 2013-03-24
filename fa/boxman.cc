@@ -22,6 +22,79 @@
 #include "streams.hh"
 #include "restart_request.hh"
 
+namespace
+{	// anonymous namespace
+
+/**
+ * @brief  Translates the cutpoint signature according to an index
+ *
+ * Given the mapping of original cutpoints to the ones in the box @p index, this
+ * function translates the cutpoint signature @p signature. 
+ *
+ * @param[out] result     The translated cutpoint signature
+ * @param[out] selectors  Vector of pairs of first selectors reaching the
+ *                        cutpoints and lowest selectors reaching through the
+ *                        opposite direction
+ * @param[in]  root       The index of the input automaton
+ * @param[in]  signature  The input signature of cutpoints
+ * @param[in]  aux        Index of the second automaton
+ * @param[in]  index      The mapping of each tree automaton index to the
+ *                        index of a component in the box
+ *
+ * @returns  Offset of the first selector reaching the second component
+ */
+size_t translateSignature(
+	ConnectionGraph::CutpointSignature&         result,
+	std::vector<std::pair<size_t, size_t>>&     selectors,
+	size_t                                      root,
+	const ConnectionGraph::CutpointSignature&   signature,
+	size_t                                      aux,
+	const std::vector<size_t>&                  index)
+{
+	// Preconditions
+	assert(result.empty());
+	assert(selectors.empty());
+
+	size_t auxSelector = static_cast<size_t>(-1);
+
+	for (const ConnectionGraph::CutpointInfo& cutpoint : signature)
+	{	// process the sequence of cutpoints in the signature in the order
+
+		// make sure the cutpoint is OK
+		assert(cutpoint.root < index.size());
+		assert(!cutpoint.fwdSelectors.empty());
+
+		// append the cutpoint and change its root according to the translation in
+		// 'index'
+		result.push_back(cutpoint);
+		result.back().root = index[cutpoint.root];
+
+		if (cutpoint.root == aux)
+		{	// in case the current cutpoint is of the second component
+			assert(static_cast<size_t>(-1) == auxSelector);
+
+			// set the first selector that reaches the second component
+			auxSelector = *cutpoint.fwdSelectors.begin();
+		}
+
+		if (cutpoint.root != root)
+		{	// in case the cutpoint is other than the input component
+
+			// append into 'selectors' the pair of the first selector reaching the
+			// cutpoint and the lowest selector of root from which it can be reached
+			// throught the opposite direction
+			selectors.push_back(
+				std::make_pair(*cutpoint.fwdSelectors.begin(), cutpoint.bwdSelector)
+			);
+		}
+	}
+
+	return auxSelector;
+}
+
+} // namespace
+
+
 const Box* BoxAntichain::get(const Box& box)
 {
 	modified_ = false;
@@ -45,7 +118,8 @@ const Box* BoxAntichain::get(const Box& box)
 				obsolete_.splice(obsolete_.end(), p.first->second, tmp);
 
 				modified_ = true;
-			} else
+			}
+			else
 			{
 				++iter;
 			}
@@ -64,6 +138,7 @@ const Box* BoxAntichain::get(const Box& box)
 
 const Box* BoxAntichain::lookup(const Box& box) const
 {
+	// find the box according to the signature
 	auto iter = boxes_.find(box.getSignature());
 
 	if (iter != boxes_.end())
@@ -71,7 +146,9 @@ const Box* BoxAntichain::lookup(const Box& box) const
 		for (auto& box2 : iter->second)
 		{
 			if (box.simplifiedLessThan(box2))
+			{
 				return &box2;
+			}
 		}
 	}
 
@@ -116,7 +193,9 @@ std::string BoxMan::getBoxName() const
 }
 
 
-label_type BoxMan::lookupLabel(size_t arity, const DataArray& x)
+label_type BoxMan::lookupLabel(
+	size_t                        arity,
+	const DataArray&              x)
 {
 	std::pair<TVarDataStore::iterator, bool> p = vDataStore_.insert(
 		std::make_pair(std::make_pair(arity, x), static_cast<NodeLabel*>(nullptr)));
@@ -128,9 +207,9 @@ label_type BoxMan::lookupLabel(size_t arity, const DataArray& x)
 
 
 bool BoxMan::EvaluateBoxF::operator()(
-	const AbstractBox* aBox,
-	size_t index,
-	size_t offset)
+	const AbstractBox*       aBox,
+	size_t                   index,
+	size_t                   offset)
 {
 	switch (aBox->getType())
 	{
@@ -166,8 +245,8 @@ bool BoxMan::EvaluateBoxF::operator()(
 
 
 label_type BoxMan::lookupLabel(
-	const std::vector<const AbstractBox*>& x,
-	const std::vector<SelData>* nodeInfo)
+	const std::vector<const AbstractBox*>&     x,
+	const std::vector<SelData>*                nodeInfo)
 {
 	std::pair<TNodeStore::iterator, bool> p = nodeStore_.insert(
 		std::make_pair(x, static_cast<NodeLabel*>(nullptr)));
@@ -227,90 +306,61 @@ const TypeBox* BoxMan::getTypeInfo(const std::string& name)
 
 
 const TypeBox* BoxMan::createTypeInfo(
-	const std::string& name,
-	const std::vector<size_t>& selectors)
+	const std::string&            name,
+	const std::vector<size_t>&    selectors)
 {
 	std::pair<const std::string, const TypeBox*>& p = *typeIndex_.insert(
-		std::make_pair(name, static_cast<const TypeBox*>(nullptr))
-	).first;
-	if (p.second)
-		throw std::runtime_error("BoxMan::createTypeInfo(): type already exists!");
+		std::make_pair(name, static_cast<const TypeBox*>(nullptr))).first;
+	if (p.second && (selectors != p.second->getSelectors()))
+	{
+		// FIXME: this should be done in a better way, more C99-like
+		throw std::runtime_error("BoxMan::createTypeInfo(): type \'" + name
+			+ "\' already exists with incompatible declaration!");
+	}
+
 	p.second = new TypeBox(name, selectors);
 	return p.second;
 }
 
 
-size_t BoxMan::translateSignature(
-	ConnectionGraph::CutpointSignature& result,
-	std::vector<std::pair<size_t, size_t>>& selectors,
-	size_t root,
-	const ConnectionGraph::CutpointSignature& signature,
-	size_t aux,
-	const std::vector<size_t>& index)
-{
-	size_t auxSelector = static_cast<size_t>(-1);
-
-	for (auto& cutpoint : signature)
-	{
-		// Assertions
-		assert(cutpoint.root < index.size());
-		assert(cutpoint.fwdSelectors.size());
-
-		result.push_back(cutpoint);
-		result.back().root = index[cutpoint.root];
-
-		if (cutpoint.root == aux)
-			auxSelector = *cutpoint.fwdSelectors.begin();
-
-		if (cutpoint.root != root)
-		{
-			selectors.push_back(
-				std::make_pair(*cutpoint.fwdSelectors.begin(), cutpoint.bwdSelector)
-			);
-		}
-	}
-
-	return auxSelector;
-}
-
-
 Box* BoxMan::createType1Box(
-	size_t root,
-	const std::shared_ptr<TreeAut>& output,
-	const ConnectionGraph::CutpointSignature& signature,
-	std::vector<size_t>& inputMap,
-	const std::vector<size_t>& index)
+	size_t                                      root,
+	const std::shared_ptr<TreeAut>&             output,
+	const ConnectionGraph::CutpointSignature&   signature,
+	const std::vector<size_t>&                  inputMap,
+	const std::vector<size_t>&                  index)
 {
 	ConnectionGraph::CutpointSignature outputSignature;
 	std::vector<std::pair<size_t, size_t>> selectors;
 
-	BoxMan::translateSignature(
+	// translate the cutpoint signature according to 'index'
+	translateSignature(
 		outputSignature, selectors, root, signature, static_cast<size_t>(-1), index
 	);
 
 	return new Box(
-		"",
-		output,
-		outputSignature,
-		inputMap,
-		std::shared_ptr<TreeAut>(nullptr),
-		0,
-		ConnectionGraph::CutpointSignature(),
-		selectors
+		/* the name of the box */ "",
+		/* the output TA */ output,
+		/* signature of the output component */ outputSignature,
+		/* mapping of cutpoints to selectors */ inputMap,
+		/* the input TA */ std::shared_ptr<TreeAut>(nullptr),
+		/* index of the input TA */ 0,
+		/* cutpoint signature of the input TA*/ ConnectionGraph::CutpointSignature(),
+		/* The vector of pairs of fwd and bwd selectors */ selectors
 	);
 }
 
 
 Box* BoxMan::createType2Box(
-	size_t root,
-	const std::shared_ptr<TreeAut>& output,
-	const ConnectionGraph::CutpointSignature& signature,
-	std::vector<size_t>& inputMap,
-	size_t aux,
-	const std::shared_ptr<TreeAut>& input,
-	const ConnectionGraph::CutpointSignature& signature2,
-	size_t inputSelector,
-	std::vector<size_t>& index)
+	size_t                                        root,
+	const std::shared_ptr<TreeAut>&               output,
+	const ConnectionGraph::CutpointSignature&     signature,
+	const std::vector<size_t>&                    inputMap,
+	size_t                                        aux,
+	const std::shared_ptr<TreeAut>&               input,
+	const ConnectionGraph::CutpointSignature&     signature2,
+	size_t                                        inputSelector,
+	std::vector<size_t>&                          index)
 {
 	// Assertions
 	assert(aux < index.size());
@@ -319,7 +369,7 @@ Box* BoxMan::createType2Box(
 	ConnectionGraph::CutpointSignature outputSignature, inputSignature;
 	std::vector<std::pair<size_t, size_t>> selectors;
 
-	size_t auxSelector = BoxMan::translateSignature(
+	size_t auxSelector = translateSignature(
 		outputSignature, selectors, root, signature, aux, index
 	);
 
@@ -363,12 +413,15 @@ Box* BoxMan::createType2Box(
 
 const Box* BoxMan::getBox(const Box& box)
 {
-	auto cpBox = boxes_.get(box);
+	// insert the box into the manager
+	const Box* cpBox = boxes_.get(box);
+	assert(nullptr != cpBox);
 
 	if (boxes_.modified())
-	{
+	{	// in the case a new box was inserted
 		Box* pBox = const_cast<Box*>(cpBox);
 
+		// perform initialization
 		pBox->name_ = this->getBoxName();
 		pBox->initialize();
 

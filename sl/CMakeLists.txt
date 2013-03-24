@@ -1,4 +1,4 @@
-# Copyright (C) 2010 Kamil Dudka <kdudka@redhat.com>
+# Copyright (C) 2010-2013 Kamil Dudka <kdudka@redhat.com>
 #
 # This file is part of predator.
 #
@@ -33,9 +33,14 @@ endif()
 # libsl.so
 add_library(sl SHARED
     cl_symexec.cc
+    cont_shape.cc
+    fixed_point.cc
+    fixed_point_proxy.cc
+    glconf.cc
     intrange.cc
     plotenum.cc
     prototype.cc
+    shape.cc
     sigcatch.cc
     symabstract.cc
     symbin.cc
@@ -82,8 +87,8 @@ install(TARGETS sl DESTINATION lib)
 
 option(TEST_ONLY_FAST "Set to OFF to boost test coverage" ON)
 
-set(GCC_EXEC_PREFIX "timeout 6000"
-    CACHE STRING "Set to empty string if not sure")
+set(GCC_EXEC_PREFIX "" CACHE STRING
+    "Set to \"timeout N\" to limit each test to run at most N seconds.")
 
 set(testdir "${sl_SOURCE_DIR}/../tests/predator-regre")
 
@@ -105,7 +110,7 @@ set(tests
     0130 0131 0132 0133 0134 0135 0136 0137 0138 0139
     0140 0141 0142 0143 0144 0145 0146 0147 0148 0149
     0150 0151 0152 0153 0154 0155 0156      0158 0159
-    0160 0161 0162 0163 0164      0166      0168
+    0160 0161 0162 0163 0164      0166 0167 0168
     0170 0171 0172 0173 0174 0175 0176 0177 0178 0179
     0180 0181 0182 0183 0184 0185 0186 0187 0188 0189
     0190 0191 0192 0193 0194 0195 0196 0197 0198 0199
@@ -113,6 +118,7 @@ set(tests
     0210      0212      0214 0215      0217 0218 0219
     0220 0221 0222 0223 0224 0225 0226 0227 0228 0229
     0230 0231 0232 0233 0234      0236 0237 0238 0239
+    0240 0241
     0300      0302
                                   0316
     0400 0401 0402 0403 0404      0406      0408
@@ -121,7 +127,9 @@ set(tests
                         0464      0466 0467
     0500 0501 0502 0503 0504 0505           0508 0509
     0510 0511 0512 0513 0514 0515 0516 0517 0518
-    0520)
+    0520
+         0601 0602 0603 0604 0605 0606 0607 0608 0609
+    0610 0611 0612 0613 0614 0615)
 
 option(TEST_INCLUDE_SLAYER "Include tests distributed with SLAyer" OFF)
 if(TEST_INCLUDE_SLAYER)
@@ -146,8 +154,8 @@ if(TEST_ONLY_FAST)
 else()
 # expensive tests
 set(tests ${tests}
-    0124 0157 0167 0521 0235
-    0308 0309 0310 0311 0312 0313 0314 0315 0317 0318
+    0124 0157 0521 0235
+    0308 0309 0310 0311 0312      0314 0315      0318
     0405 0407 0409 0410 0412 0413 0414 0415 0416 0417 0418
     0469 0471 0474)
 endif()
@@ -197,7 +205,7 @@ macro(test_predator_regre name_suff ext arg1)
         set(cmd "${cmd} | sed 's|^[^:]*/||'")
 
         # drop var UIDs that are not guaranteed to be fixed among runs
-        set(cmd "${cmd} | sed -r -e 's|#[0-9]+:||g' -e 's|#[0-9]+|_|g'")
+        set(cmd "${cmd} | sed -r -e 's|#[0-9]+:||g' -e 's|[#.][0-9]+|_|g'")
 
         # ... and finally diff with the expected output
         set(cmd "${cmd} | diff -up ${testdir}/test-${num}.err${ext} -")

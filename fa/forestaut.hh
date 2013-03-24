@@ -35,8 +35,7 @@
 #include "treeaut_label.hh"
 #include "abstractbox.hh"
 #include "connection_graph.hh"
-
-
+#include "streams.hh"
 
 
 /**
@@ -46,29 +45,51 @@ class FA
 {
 public:   // data types
 
+	typedef TreeAut::Transition Transition;
 
-public:
+public:   // data members
 
 	TreeAut::Backend* backend;
 
-private:  // data members
+protected:// data members
 
 	DataArray variables_;
 
-public:
+	std::vector<std::shared_ptr<TreeAut>> roots_;
 
-	std::vector<std::shared_ptr<TreeAut>> roots;
+public:   // data members
 
 	mutable ConnectionGraph connectionGraph;
 
-	static void reorderBoxes(
-		std::vector<const AbstractBox*>& label,
-		std::vector<size_t>& lhs);
+public:   // methods
 
+
+	/**
+	 * @brief  Reorder boxes into the normal form
+	 *
+	 * This method reorders the passed vector of boxes (as well as the vector of
+	 * states that are target states of the boxes) into the @e normal form.
+	 *
+	 * @param[in,out]  label  Vector of boxes to be reordered
+	 * @param[in,out]  lhs    Vector of states corresponding to @p label
+	 */
+	static void reorderBoxes(
+		std::vector<const AbstractBox*>&     label,
+		std::vector<size_t>&                 lhs);
+
+
+	/**
+	 * @brief  Allocates a new TreeAut
+	 *
+	 * Allocates a new TreeAut using the backend of the FA.
+	 *
+	 * @returns  Pointer to a new TreeAut
+	 */
 	TreeAut* allocTA()
 	{
 		return new TreeAut(*this->backend);
 	}
+
 
 protected:// methods
 
@@ -77,23 +98,24 @@ protected:// methods
 		variables_ = data;
 	}
 
-public:
+public:   // methods
 
-	static bool isData(size_t state) {
+	static bool isData(size_t state)
+	{
 		return _MSB_TEST(state);
 	}
 
 	FA(TreeAut::Backend& backend) :
 		backend(&backend),
 		variables_{},
-		roots{},
+		roots_{},
 		connectionGraph{}
 	{ }
 
 	FA(const FA& src) :
 		backend(src.backend),
 		variables_(src.variables_),
-		roots(src.roots),
+		roots_(src.roots_),
 		connectionGraph(src.connectionGraph)
 	{ }
 
@@ -106,7 +128,7 @@ public:
 		{
 			backend = src.backend;
 			variables_ = src.variables_;
-			roots = src.roots;
+			roots_ = src.roots_;
 			connectionGraph = src.connectionGraph;
 		}
 
@@ -115,32 +137,83 @@ public:
 
 	void clear()
 	{
-		this->roots.clear();
+		roots_.clear();
 		this->connectionGraph.clear();
 		variables_.clear();
 	}
 
-	size_t getRootCount() const {
-		return this->roots.size();
+	size_t getRootCount() const
+	{
+		return roots_.size();
 	}
 
-	const TreeAut* getRoot(size_t i) const {
-		assert(i < this->roots.size());
-		return this->roots[i].get();
+	/**
+	 * @brief  Gets the count of valid roots
+	 *
+	 * Retrieve the number of valid roots (i.e. not-@p nullptr roots).
+	 *
+	 * @returns  The count of valid roots
+	 *
+	 * @todo: cache?
+	 */
+	size_t getValidRootCount() const
+	{
+		size_t sum = 0;
+		for (std::shared_ptr<TreeAut> rootPtr : this->getRoots())
+		{
+			if (nullptr != rootPtr) ++sum;
+		}
+
+		return sum;
 	}
 
-	void appendRoot(TreeAut* ta) {
-		this->roots.push_back(std::shared_ptr<TreeAut>(ta));
+	const std::shared_ptr<TreeAut>& getRoot(size_t i) const
+	{
+		assert(i < this->getRootCount());
+		return roots_[i];
 	}
 
-	void appendRoot(std::shared_ptr<TreeAut> ta) {
-		this->roots.push_back(ta);
+	std::shared_ptr<TreeAut>& getRoot(size_t i)
+	{
+		assert(i < this->getRootCount());
+		return roots_[i];
 	}
 
-	void updateConnectionGraph() const {
+	void setRoot(size_t i, std::shared_ptr<TreeAut> ta)
+	{
+		assert(i < this->getRootCount());
+		roots_[i] = ta;
+	}
 
-		this->connectionGraph.updateIfNeeded(this->roots);
+	void appendRoot(TreeAut* ta)
+	{
+		roots_.push_back(std::shared_ptr<TreeAut>(ta));
+	}
 
+	const std::vector<std::shared_ptr<TreeAut>>& getRoots() const
+	{
+		return roots_;
+	}
+
+	void appendRoot(std::shared_ptr<TreeAut> ta)
+	{
+		roots_.push_back(ta);
+	}
+
+	void resizeRoots(size_t newSize)
+	{
+		roots_.resize(newSize);
+	}
+
+	void swapRoots(std::vector<std::shared_ptr<TreeAut>> otherRoots)
+	{
+		roots_.swap(otherRoots);
+	}
+
+
+	void updateConnectionGraph() const
+	{
+		this->connectionGraph.updateIfNeeded(this->getRoots());
 	}
 
 	void PushVar(const Data& var)
@@ -171,6 +244,11 @@ public:
 		return variables_;
 	}
 
+	bool Empty() const
+	{
+		return roots_.empty();
+	}
+
 	void SetVar(size_t varId, const Data& data)
 	{
 		// Assertions
@@ -179,6 +257,11 @@ public:
 		variables_[varId] = data;
 	}
 
+	/**
+	 * @brief  Sets all variables referencing given root to undef
+	 *
+	 * @param[in]  root  The desired root reference
+	 */
 	void SetVarsToUndefForRoot(size_t root)
 	{
 		for (auto& var : variables_)
@@ -212,6 +295,7 @@ public:
 		return variables_.back();
 	}
 
+
 	/**
 	 * @brief  Run a visitor on the instance
 	 *
@@ -227,7 +311,19 @@ public:
 		visitor(*this);
 	}
 
-public:   // static methods
+
+	static std::string writeState(size_t state)
+	{
+		std::ostringstream ss;
+		if (_MSB_TEST(state))
+			ss << 'r' << _MSB_GET(state);
+		else
+			ss << 'q' << state;
+
+		return ss.str();
+	}
+
+	static std::string writeTransition(const Transition& trans);
 
 	friend std::ostream& operator<<(std::ostream& os, const FA& fa);
 
@@ -238,6 +334,16 @@ public:   // static methods
 	{ }
 };
 
+/**
+ * @brief  The output stream operator
+ *
+ * The std::ostream << operator for conversion of a TA to a string.
+ *
+ * @param[in,out]  os  The output stream
+ * @param[in]      ta  The TA to be appended to the stream
+ *
+ * @returns  The modified output stream
+ */
 std::ostream& operator<<(std::ostream& os, const TreeAut& ta);
 
 #endif

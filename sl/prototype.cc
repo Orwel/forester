@@ -45,15 +45,13 @@ struct ProtoFinder {
 // visitor
 class ProtoCollector {
     private:
-        TObjList               &protoList_;
-        const bool              skipDlsPeers_;
+        TObjSet                &protoList_;
         TFldSet                 ignoreList_;
         WorkList<TObjId>        wl_;
 
     public:
-        ProtoCollector(TObjList &dst, bool skipDlsPeers):
-            protoList_(dst),
-            skipDlsPeers_(skipDlsPeers)
+        ProtoCollector(TObjSet &dst):
+            protoList_(dst)
         {
         }
 
@@ -85,64 +83,46 @@ bool ProtoCollector::operator()(const FldHandle &fld)
     wl_.schedule(proto);
     while (wl_.next(proto)) {
         ProtoFinder visitor;
-        traverseLivePtrs(sh, proto, visitor);
+        traverseLiveFields(sh, proto, visitor);
         BOOST_FOREACH(const TObjId proto, visitor.protos)
             wl_.schedule(proto);
 
-            if (skipDlsPeers_ && isDlSegPeer(sh, proto))
-                // we are asked to return only one part of each DLS
-                continue;
-
-        protoList_.push_back(proto);
+        protoList_.insert(proto);
     }
 
     return /* continue */ true;
 }
 
 bool collectPrototypesOf(
-        TObjList                   &dst,
+        TObjSet                    &dst,
         SymHeap                    &sh,
-        const TObjId                obj,
-        const bool                  skipDlsPeers)
+        const TObjId                obj)
 {
     if (OK_REGION == sh.objKind(obj))
         // only abstract objects are allowed to have prototypes
         return false;
 
-    ProtoCollector collector(dst, skipDlsPeers);
+    ProtoCollector collector(dst);
     buildIgnoreList(collector.ignoreList(), sh, obj);
-    return traverseLivePtrs(sh, obj, collector);
-}
-
-void objChangeProtoLevel(SymHeap &sh, TObjId proto, const TProtoLevel diff)
-{
-    const TProtoLevel level = sh.objProtoLevel(proto);
-    sh.objSetProtoLevel(proto, level + diff);
-
-    const EObjKind kind = sh.objKind(proto);
-    if (OK_DLS != kind)
-        return;
-
-    const TObjId peer = dlSegPeer(sh, proto);
-    CL_BREAK_IF(sh.objProtoLevel(peer) != level);
-
-    sh.objSetProtoLevel(peer, level + diff);
+    return traverseLiveFields(sh, obj, collector);
 }
 
 void objIncrementProtoLevel(SymHeap &sh, TObjId obj)
 {
-    objChangeProtoLevel(sh, obj, 1);
+    const TProtoLevel level = sh.objProtoLevel(obj);
+    sh.objSetProtoLevel(obj, level + 1);
 }
 
 void objDecrementProtoLevel(SymHeap &sh, TObjId obj)
 {
-    objChangeProtoLevel(sh, obj, -1);
+    const TProtoLevel level = sh.objProtoLevel(obj);
+    sh.objSetProtoLevel(obj, level - 1);
 }
 
 void decrementProtoLevel(SymHeap &sh, const TObjId obj)
 {
-    TObjList protoList;
-    collectPrototypesOf(protoList, sh, obj, /* skipDlsPeers */ true);
+    TObjSet protoList;
+    collectPrototypesOf(protoList, sh, obj);
     BOOST_FOREACH(const TObjId proto, protoList)
         objDecrementProtoLevel(sh, proto);
 }
@@ -158,9 +138,12 @@ bool protoCheckConsistency(const SymHeap &sh)
         const TProtoLevel rootLevel = sh.objProtoLevel(obj);
 
         FldList ptrs;
-        sh.gatherLivePointers(ptrs, obj);
+        sh.gatherLiveFields(ptrs, obj);
         BOOST_FOREACH(const FldHandle &fld, ptrs) {
             const TObjId sub = sh.objByAddr(fld.value());
+            if (OBJ_INVALID == sub)
+                continue;
+
             const TProtoLevel level = sh.objProtoLevel(sub);
             if (level <= rootLevel)
                 continue;

@@ -15,6 +15,12 @@
 # You should have received a copy of the GNU General Public License
 # along with predator.  If not, see <http://www.gnu.org/licenses/>.
 
+# uncomment this on Darwin if linking the plug-ins fails on undefined references
+#set(CMAKE_SHARED_LINKER_FLAGS "-flat_namespace -undefined suppress")
+
+# CMake on Darwin would otherwise use .dylib suffix, which breaks GCC arg parser
+set(CMAKE_SHARED_LIBRARY_SUFFIX ".so")
+
 # Check Boost availability
 set(Boost_USE_STATIC_LIBS ON)
 set(Boost_ADDITIONAL_VERSIONS "1.46" "1.47" "1.48" "1.49")
@@ -51,6 +57,10 @@ endmacro()
 # treat Code Listener headers as system headers when scanning dependencies
 include_directories(SYSTEM ../include)
 
+# make sure the linking works appropriately
+ADD_C_FLAG(       "fPIC"                 "-fPIC")
+ADD_C_FLAG(       "hidden_visibility"    "-fvisibility=hidden")
+
 # we use c99 to compile *.c and c++0x to compile *.cc
 ADD_C_ONLY_FLAG(  "STD_C99"         "-std=c99")
 ADD_CXX_ONLY_FLAG("STD_CXX_0X"      "-std=c++0x")
@@ -58,7 +68,6 @@ ADD_CXX_ONLY_FLAG("STD_CXX_0X"      "-std=c++0x")
 # tweak warnings
 ADD_C_FLAG(       "PEDANTIC"             "-pedantic")
 ADD_C_FLAG(       "W_ALL"                "-Wall")
-ADD_C_FLAG(       "fPIC"                 "-fPIC")
 ADD_C_FLAG(       "W_FLOAT_EQUAL"        "-Wfloat-equal")
 ADD_C_ONLY_FLAG(  "W_UNDEF"              "-Wundef")
 ADD_CXX_ONLY_FLAG("W_NO_DEPRECATED"      "-Wno-deprecated")
@@ -106,7 +115,7 @@ set(GCC_HOST "${def_gcc_host}" CACHE STRING "absolute path to host gcc(1)")
 if("$ENV{GCC_HOST}" STREQUAL "")
 else()
     execute_process(COMMAND "${GCC_HOST}" "-print-file-name=plugin"
-        RESULT_VARIABLE GCC_HOST_STATUS)
+        RESULT_VARIABLE GCC_HOST_STATUS OUTPUT_QUIET)
     if (NOT "${GCC_HOST_STATUS}" EQUAL 0)
 
         # the current GCC_HOST does not work, try to fall-back to $ENV{GCC_HOST}

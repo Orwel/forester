@@ -3,6 +3,7 @@
  */
 
 #include <stdlib.h>
+#include <verifier-builtins.h>
 
 int main() {
 
@@ -19,7 +20,7 @@ int main() {
 	x->next = NULL;
 	x->prev = NULL;
 
-	while (__nondet()) {
+	while (__VERIFIER_nondet_int()) {
 		y = malloc(sizeof(struct T));
 		y->next = x;
 		x->prev = y;
@@ -27,7 +28,7 @@ int main() {
 		x = y;
 	}
 
-	___fa_plot("test-f0028-fixpoint");
+	__VERIFIER_plot("test-f0028-fixpoint");
 
 	while (x) {
 		y = x->next;

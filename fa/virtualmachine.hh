@@ -44,12 +44,17 @@
  */
 class VirtualMachine
 {
+public:   // data types
+
+	/// Transition
+	typedef TT<label_type> Transition;
+
 private:   // data members
 
 	/// Reference to the forest automaton representing the environment
 	FAE& fae_;
 
-protected:
+protected:// methods
 
 	/**
 	 * @brief  Sets displacement of type and value information
@@ -163,9 +168,9 @@ protected:
 	 * @todo: sanitize the interface
 	 */
 	void transitionLookup(
-		const TT<label_type>& transition,
-		size_t offset,
-		Data& data) const;
+		const Transition&                 transition,
+		size_t                            offset,
+		Data&                             data) const;
 
 
 	/**
@@ -182,28 +187,28 @@ protected:
 	 * @todo: sanitize the interface
 	 */
 	void transitionLookup(
-		const TT<label_type>& transition,
-		size_t base,
-		const std::vector<size_t>& offsets,
-		Data& data) const;
+		const Transition&                 transition,
+		size_t                            base,
+		const std::vector<size_t>&        offsets,
+		Data&                             data) const;
 
 
 	/// @todo: add documentation
 	void transitionModify(
-		TreeAut& dst,
-		const TT<label_type>& transition,
-		size_t offset,
-		const Data& in,
-		Data& out);
+		TreeAut&                          dst,
+		const Transition&                 transition,
+		size_t                            offset,
+		const Data&                       in,
+		Data&                             out);
 
 
 	/// @todo: add documentation
 	void transitionModify(
-		TreeAut& dst,
-		const TT<label_type>& transition,
-		size_t base,
-		const std::vector<std::pair<size_t, Data> >& in,
-		Data& out);
+		TreeAut&                                      dst,
+		const Transition&                             transition,
+		size_t                                        base,
+		const std::vector<std::pair<size_t, Data>>&   in,
+		Data&                                         out);
 
 
 public:
@@ -293,7 +298,7 @@ public:
 	 * @param[in]  typeInfo  Description of the type of data stored in the node
 	 *                       (if present)
 	 *
-	 * @returns  Identifier of the inserted tree automaton
+	 * @returns  Index (tree automaton reference) of the inserted tree automaton
 	 */
 	size_t nodeCreate(
 		const std::vector<SelData>& nodeInfo,
@@ -311,6 +316,16 @@ public:
 	void nodeDelete(size_t root);
 
 	/**
+	 * @brief  Copies a node from another virtual machine
+	 *
+	 * @todo
+	 */
+	void nodeCopy(
+		size_t                          dstRoot,
+		const VirtualMachine&           srcVM,
+		size_t                          srcRoot);
+
+	/**
 	 * @brief  Looks up a node in the memory
 	 *
 	 * Retrieves a node from the virtual machine's memory. The node is specified
@@ -323,22 +338,25 @@ public:
 	 *
 	 * @todo: obfuscate (too clear)
 	 */
-	void nodeLookup(size_t root, size_t offset, Data& data) const
+	void nodeLookup(
+		size_t                           root,
+		size_t                           offset,
+		Data&                            data) const
 	{
 		// Assertions
-		assert(root < fae_.roots.size());
-		assert(fae_.roots[root]);
+		assert(root < fae_.getRootCount());
+		assert(nullptr != fae_.getRoot(root));
 
 		this->transitionLookup(
-			fae_.roots[root]->getAcceptingTransition(), offset, data);
+			fae_.getRoot(root)->getAcceptingTransition(), offset, data);
 	}
 
 	/**
 	 * @brief  Looks up a node with multiple data in the memory
 	 *
 	 * Retrieves a node with multiple data from the virtual machine's memory. The
-	 * node is specified by the identifier of the tree automaton and an offset.
-	 * The node is retrieved from the accepting transition.
+	 * node is specified by the identifier of the tree automaton, the base and
+	 * several offsets. The node is retrieved from the accepting transition.
 	 *
 	 * @param[in]   root     Identifier of the tree automaton
 	 * @param[in]   base     Offset of the base of the structure
@@ -348,37 +366,39 @@ public:
 	 * @todo: obfuscate (too clear)
 	 */
 	void nodeLookupMultiple(
-		size_t root,
-		size_t base,
-		const std::vector<size_t>& offsets,
-		Data& data) const
+		size_t                          root,
+		size_t                          base,
+		const std::vector<size_t>&      offsets,
+		Data&                           data) const
 	{
 		// Assertions
-		assert(root < fae_.roots.size());
-		assert(fae_.roots[root]);
+		assert(root < fae_.getRootCount());
+		assert(nullptr != fae_.getRoot(root));
 
-		this->transitionLookup(fae_.roots[root]->getAcceptingTransition(),
+		this->transitionLookup(fae_.getRoot(root)->getAcceptingTransition(),
 			base, offsets, data);
 	}
 
 	/// @todo add documentation
 	void nodeModify(
-		size_t root,
-		size_t offset,
-		const Data& in,
-		Data& out);
+		size_t                          root,
+		size_t                          offset,
+		const Data&                     in,
+		Data&                           out);
 
 
 	/// @todo add documentation
 	void nodeModifyMultiple(
-		size_t root,
-		size_t offset,
-		const Data& in,
-		Data& out);
+		size_t                          root,
+		size_t                          offset,
+		const Data&                     in,
+		Data&                           out);
 
 
 	/// @todo add documentation
-	void getNearbyReferences(size_t root, std::set<size_t>& out) const;
+	void getNearbyReferences(
+		size_t                          root,
+		std::set<size_t>&               out) const;
 
 
 public:

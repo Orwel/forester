@@ -47,18 +47,18 @@ size_t hash_value(const Box::Signature& signature)
 
 
 void Box::getDownwardCoverage(
-	std::vector<size_t>& v,
-	const std::vector<const AbstractBox*>& label)
+	std::vector<size_t>&                          v,
+	const std::vector<const AbstractBox*>&        label)
 {
-	for (auto& absBox : label)
-	{
+	for (const AbstractBox* absBox : label)
+	{	// for all boxes in the label
 		switch (absBox->getType())
-		{
-			case box_type_e::bSel:
+		{	// according to the type of the box
+			case box_type_e::bSel: // selector
 				v.push_back((static_cast<const SelBox*>(absBox))->getData().offset);
 				break;
 
-			case box_type_e::bBox:
+			case box_type_e::bBox: // hierarchical box
 			{
 				const Box* box = static_cast<const Box*>(absBox);
 				v.insert(v.end(), box->selCoverage_[0].begin(), box->selCoverage_[0].end());
@@ -72,8 +72,8 @@ void Box::getDownwardCoverage(
 
 
 bool Box::checkDownwardCoverage(
-	const std::vector<size_t>& v,
-	const TreeAut& ta)
+	const std::vector<size_t>&                    v,
+	const TreeAut&                                ta)
 {
 	for (TreeAut::iterator i = ta.accBegin(); i != ta.accEnd(i); ++i)
 	{
@@ -90,8 +90,8 @@ bool Box::checkDownwardCoverage(
 
 
 void Box::getDownwardCoverage(
-	std::set<size_t>& s,
-	const TreeAut& ta)
+	std::set<size_t>&                             s,
+	const TreeAut&                                ta)
 {
 	std::vector<size_t> v;
 
@@ -110,8 +110,8 @@ void Box::getDownwardCoverage(
 
 
 void Box::getAcceptingLabels(
-	std::vector<label_type>& labels,
-	const TreeAut& ta)
+	std::vector<label_type>&                       labels,
+	const TreeAut&                                 ta)
 {
 	for (auto& state : ta.getFinalStates())
 	{
@@ -126,14 +126,14 @@ void Box::getAcceptingLabels(
 
 
 Box::Box(
-	const std::string& name,
-	const std::shared_ptr<TreeAut>& output,
-	ConnectionGraph::CutpointSignature outputSignature,
-	const std::vector<size_t>& inputMap,
-	const std::shared_ptr<TreeAut>& input,
-	size_t inputIndex,
-	ConnectionGraph::CutpointSignature inputSignature,
-	const std::vector<std::pair<size_t,size_t>>& selectors
+	const std::string&                                 name,
+	const std::shared_ptr<TreeAut>&                    output,
+	ConnectionGraph::CutpointSignature                 outputSignature,
+	const std::vector<size_t>&                         inputMap,
+	const std::shared_ptr<TreeAut>&                    input,
+	size_t                                             inputIndex,
+	ConnectionGraph::CutpointSignature                 inputSignature,
+	const std::vector<std::pair<size_t,size_t>>&       selectors
 ) :
 	StructuralBox(box_type_e::bBox, selectors.size()),
 	name_(name),
@@ -323,6 +323,8 @@ void Box::initialize()
 
 	this->enumerateSelectorsAtLeaves(selCoverage_, *output_);
 
+	selfReference_ = ConnectionGraph::containsCutpoint(outputSignature_, 0);
+
 	if (!input_)
 		return;
 
@@ -331,8 +333,6 @@ void Box::initialize()
 	Box::getDownwardCoverage(selCoverage_[inputIndex_ + 1], *input_);
 
 	this->enumerateSelectorsAtLeaves(selCoverage_, *input_);
-
-	selfReference_ = ConnectionGraph::containsCutpoint(outputSignature_, 0);
 }
 
 
@@ -382,4 +382,38 @@ std::ostream& operator<<(std::ostream& os, const Box& box)
 	writer.writeTransitions(*box.input_, writeStateF);
 
 	return os;
+}
+
+void Box::toStream(std::ostream& os) const
+{
+	os << name_ << '(' << arity_ << ")[in=";
+
+	// coverage of the input port
+	for (auto it = this->outputCoverage().cbegin(); it != this->outputCoverage().cend(); ++it)
+	{
+		if (this->outputCoverage().cbegin() != it)
+		{
+			os << ",";
+		}
+
+		os << *it;
+	}
+
+	// coverage of output ports
+	for (size_t i = 0; i < this->outPortsNum(); ++i)
+	{
+		os << "; out" << i << "=";
+
+		for (auto it = this->inputCoverage(i).cbegin(); it != this->inputCoverage(i).cend(); ++it)
+		{
+			if (this->inputCoverage(i).cbegin() != it)
+			{
+				os << ",";
+			}
+
+			os << *it;
+		}
+	}
+
+	os << "]";
 }

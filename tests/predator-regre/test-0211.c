@@ -22,7 +22,7 @@ char *strrev(const char *str)
     char *beg = rev;
     char *end = beg + strlen(rev) - 1;
     while (beg < end) {
-        ___sl_plot("single-step", &beg, &end);
+        __VERIFIER_plot("single-step", &beg, &end);
         char c = *beg;
         *beg++ = *end;
         *end-- = c;
@@ -44,7 +44,7 @@ void seek_last_char(const char **ppos)
 void exercise(const char *a, const char *b)
 {
     for(seek_last_char(&b); *a; ++a, --b)
-        ___SL_ASSERT(*a == *b);
+        __VERIFIER_assert(*a == *b);
 }
 
 int main()
@@ -55,8 +55,8 @@ int main()
     if (!rev)
         return 1;
 
-    ___sl_plot("strrev-done", &str, &rev);
-    ___SL_ASSERT(!rev[sizeof str - 1]);
+    __VERIFIER_plot("strrev-done", &str, &rev);
+    __VERIFIER_assert(!rev[sizeof str - 1]);
 
     exercise(str, rev);
     exercise(rev, str);

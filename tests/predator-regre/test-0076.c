@@ -3,7 +3,7 @@
 
 #include <verifier-builtins.h>
 
-#include <linux/stddef.h>
+/* #include <linux/stddef.h> */
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,7 +36,7 @@ int main()
 
     struct litem *pli = ROOT(struct litem, lhead, lh);
     struct gitem *pgi = ROOT(struct gitem, li, pli);
-    ___sl_plot("01");
+    __VERIFIER_plot("01");
 
     if (pli != &li)
         free(pli);

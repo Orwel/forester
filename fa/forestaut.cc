@@ -18,11 +18,29 @@
  */
 
 #include "forestaut.hh"
+#include "streams.hh"
 #include "tatimint.hh"
 
-
+// anonymous namespace
 namespace
 {
+size_t getLabelArity(std::vector<const AbstractBox*>& label)
+{
+	size_t arity = 0;
+
+	for (auto& box : label)
+		arity += box->getArity();
+
+	return arity;
+}
+} // namespace
+
+
+void FA::reorderBoxes(
+	std::vector<const AbstractBox*>&     label,
+	std::vector<size_t>&                 lhs)
+{
+	// local structure
 	struct BoxCmpF
 	{
 		bool operator()(
@@ -36,61 +54,49 @@ namespace
 		}
 	};
 
-
-	struct WriteStateF
-	{
-		std::string operator()(size_t state) const
-		{
-			std::ostringstream ss;
-			if (_MSB_TEST(state))
-				ss << 'r' << _MSB_GET(state);
-			else
-				ss << 'q' << state;
-
-			return ss.str();
-		}
-	};
-
-	size_t getLabelArity(std::vector<const AbstractBox*>& label)
-	{
-		size_t arity = 0;
-
-		for (auto& box : label)
-			arity += box->getArity();
-
-		return arity;
-	}
-}
-
-void FA::reorderBoxes(
-	std::vector<const AbstractBox*>& label,
-	std::vector<size_t>& lhs)
-{
 	// Assertions
 	assert(getLabelArity(label) == lhs.size());
 
+	// vector for holding pairs <box, vector of corresponding states>
 	std::vector<std::pair<const AbstractBox*, std::vector<size_t>>> tmp;
-	std::vector<size_t>::iterator lhsBegin = lhs.end(), lhsEnd = lhs.begin();
+
+	std::vector<size_t>::iterator lhsBegin;
+	std::vector<size_t>::iterator lhsEnd = lhs.begin();
 
 	for (size_t i = 0; i < label.size(); ++i)
-	{
-		lhsBegin = lhsEnd;
+	{	// fill the 'tmp' vector
+		lhsBegin = lhsEnd;  // beginning is the end from the last iteration
 
 		lhsEnd += label[i]->getArity();
 
 		tmp.push_back(std::make_pair(label[i], std::vector<size_t>(lhsBegin, lhsEnd)));
 	}
 
+	// sort the boxes into a normal form
 	std::sort(tmp.begin(), tmp.end(), BoxCmpF());
 
 	lhs.clear();
 
 	for (size_t i = 0; i < tmp.size(); ++i)
-	{
+	{	// reorder the vectors according to the normal form
 		label[i] = tmp[i].first;
 
 		lhs.insert(lhs.end(), tmp[i].second.begin(), tmp[i].second.end());
 	}
+}
+
+
+std::string FA::writeTransition(const Transition& trans)
+{
+	std::ostringstream oss;
+	TimbukWriter writer(oss);
+
+	std::ostringstream tmp;
+	tmp << trans.label();
+
+	writer.writeTransition(trans.lhs(), tmp.str(), trans.rhs(), FA::writeState);
+
+	return oss.str();
 }
 
 
@@ -103,7 +109,7 @@ std::ostream& operator<<(std::ostream& os, const TreeAut& ta)
 		writer.writeState(state);
 
 	os << " ]" << std::endl;;
-	writer.writeTransitions(ta, WriteStateF());
+	writer.writeTransitions(ta, FA::writeState);
 	return os;
 }
 
@@ -117,22 +123,23 @@ std::ostream& operator<<(std::ostream& os, const FA& fa)
 	}
 	os << " ]" << std::endl;
 
-	for (size_t i = 0; i < fa.roots.size(); ++i)
+	for (size_t i = 0; i < fa.getRootCount(); ++i)
 	{
-		if (!fa.roots[i])
+		if (!fa.getRoot(i))
 			continue;
 
-		os << "===" << std::endl << "root " << i << " [" << fa.connectionGraph.data[i] << ']';
+		os << "===" << std::endl << "root " << i; // no cutpoint info
+		//os << "===" << std::endl << "root " << i << " [" << fa.connectionGraph.data[i] << ']';
 
 		TAWriter<label_type> writer(os);
 
-		for (auto state : fa.roots[i]->getFinalStates())
+		for (size_t state : fa.getRoot(i)->getFinalStates())
 		{
 			writer.writeState(state);
 		}
 
 		writer.endl();
-		writer.writeTransitions(*fa.roots[i], WriteStateF());
+		writer.writeTransitions(*fa.getRoot(i), FA::writeState);
 	}
 
 	return os;

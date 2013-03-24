@@ -43,20 +43,24 @@ void reportErrorNoLocation(const char* errMsg)
 #include <algorithm>
 
 // Code Listener headers
-#include <cl/code_listener.h>
+#include <cl/cl_msg.hh>
 #include <cl/cldebug.hh>
 #include <cl/clutil.hh>
+#include <cl/code_listener.h>
 #include <cl/storage.hh>
 #include "../cl/ssd.h"
 
 // Forester headers
-#include "forestautext.hh"
-#include "symctx.hh"
+#include "backward_run.hh"
 #include "executionmanager.hh"
+#include "fixpoint.hh"
 #include "fixpointinstruction.hh"
+#include "forestautext.hh"
 #include "memplot.hh"
 #include "programconfig.hh"
+#include "programerror.hh"
 #include "restart_request.hh"
+#include "symctx.hh"
 #include "symexec.hh"
 
 using namespace ssd;
@@ -77,84 +81,108 @@ void dumpOperandTypes(std::ostream& os, const cl_operand* op) {
 // anonymous namespace
 namespace
 {
-	/**
-	 * @brief  Prints the trace to output stream
-	 *
-	 * @param[in,out]  os     The output stream
-	 * @param[in]      trace  The trace to be printed
-	 *
-	 * @returns  Modified stream
-	 */
-	std::ostream& printTrace(
-		std::ostream&             os,
-		const SymState::Trace&    trace)
-	{
-		const CodeStorage::Insn* lastInsn = nullptr;
+/**
+ * @brief  Prints the trace to output stream
+ *
+ * @param[in,out]  os     The output stream
+ * @param[in]      trace  The trace to be printed
+ *
+ * @returns  Modified stream
+ */
+std::ostream& printTrace(
+	std::ostream&             os,
+	const SymState::Trace&    trace)
+{
+	const CodeStorage::Insn* lastInsn = nullptr;
 
-		for (auto it = trace.crbegin(); it != trace.crend(); ++it)
-		{	// traverse in the reverse order
-			const SymState& state = **it;
+	for (auto it = trace.crbegin(); it != trace.crend(); ++it)
+	{	// traverse in the reverse order
+		const SymState& state = **it;
 
-			assert(state.GetInstr());
-			const AbstractInstruction& instr = *state.GetInstr();
+		assert(state.GetInstr());
+		const AbstractInstruction& instr = *state.GetInstr();
 
-			const CodeStorage::Insn* origInsn = instr.insn();
-			if ((nullptr != origInsn) && (lastInsn != origInsn))
-			{
-				std::ostringstream oss;
-				oss << *origInsn;
-
-				std::string filename = MemPlotter::plotHeap(state);
-				lastInsn = origInsn;
-				os << origInsn->loc.file << ":" << std::setw(4) << std::left
-					<< origInsn->loc.line << ":  "
-					<< std::setw(50) << std::left << oss.str() << " // " << filename << "\n";
-			}
-		}
-
-		return os;
-	}
-
-
-	/**
-	 * @brief  Prints the microcode trace to output stream
-	 *
-	 * @param[in,out]  os     The output stream
-	 * @param[in]      trace  The trace to be printed
-	 *
-	 * @returns  Modified stream
-	 */
-	std::ostream& printUcodeTrace(
-		std::ostream&             os,
-		const SymState::Trace&    trace)
-	{
-		const CodeStorage::Insn* lastInsn = nullptr;
-
-		for (auto it = trace.crbegin(); it != trace.crend(); ++it)
-		{	// traverse in the reverse order
-			const SymState& state = **it;
-
-			assert(state.GetInstr());
-			const AbstractInstruction& instr = *state.GetInstr();
-
+		const CodeStorage::Insn* origInsn = instr.insn();
+		if ((nullptr != origInsn) && (lastInsn != origInsn))
+		{
 			std::ostringstream oss;
-			oss << instr;
+			oss << *origInsn;
 
-			os << "            " << std::setw(50) << std::left << oss.str();
+			std::string filename = MemPlotter::plotHeap(state, "trace", &origInsn->loc);
+			lastInsn = origInsn;
+			os << std::setw(50) << std::left
+				<< Compiler::Assembly::insnToString(*origInsn) << " // "
+				<< origInsn->loc.file << ":" << std::setw(4) << std::left
+				<< origInsn->loc.line << "|  " << filename << "\n";
+		}
+	}
 
-			const CodeStorage::Insn* origInsn = instr.insn();
-			if ((nullptr != origInsn) && (lastInsn != origInsn))
+	return os;
+}
+
+
+/**
+ * @brief  Prints the microcode trace to output stream
+ *
+ * @param[in,out]  os     The output stream
+ * @param[in]      trace  The trace to be printed
+ *
+ * @returns  Modified stream
+ */
+std::ostream& printUcodeTrace(
+	std::ostream&             os,
+	const SymState::Trace&    trace)
+{
+	const CodeStorage::Insn* lastInsn = nullptr;
+
+	for (auto it = trace.crbegin(); it != trace.crend(); ++it)
+	{	// traverse in the reverse order
+		const SymState& state = **it;
+
+		assert(state.GetInstr());
+		const AbstractInstruction& instr = *state.GetInstr();
+		const CodeStorage::Insn* clInsn = instr.insn();
+
+		os << &state;
+
+		os << std::setw(18);
+		if (instr.isTarget())
+		{
+			std::ostringstream addrStream;
+			addrStream << &instr;
+
+			if ((nullptr != clInsn) && (clInsn != lastInsn)
+				&& (clInsn->bb->front() == clInsn))
 			{
-				lastInsn = origInsn;
-				os << "; " << origInsn->loc.line << ": " << *origInsn;
+				addrStream << " (" << clInsn->bb->name() << ")";
 			}
 
-			os << "\n";
-			//MemPlotter::plotHeap(state);
+			addrStream << ":";
+
+			os << std::left << addrStream.str();
+		}
+		else
+		{
+			os << "";
 		}
 
-		return os;
+		std::ostringstream osInstr;
+		osInstr << instr;
+
+		os << std::setw(40) << std::left << osInstr.str();
+
+		if ((nullptr != clInsn) && (lastInsn != clInsn))
+		{
+			lastInsn = clInsn;
+			os << "; " << clInsn->loc.line << ": " << *clInsn;
+		}
+
+		os << "\n";
+		//MemPlotter::plotHeap(state);
 	}
+
+	return os;
+}
 } // namespace
 
 
@@ -208,13 +236,64 @@ protected:
 	}
 
 	/**
+	 * @brief  Clears all fixpoints
+	 */
+	void clearFixpoints()
+	{
+		// clear all fixpoints
+		for (auto instr : assembly_.code_)
+		{
+			if (instr->getType() == fi_type_e::fiFix)
+			{
+				// clear the fixpoint
+				static_cast<FixpointInstruction*>(instr)->clear();
+			}
+		}
+	}
+
+
+	/**
 	 * @brief  The main execution loop
 	 *
 	 * This method is the main execution loop for the symbolic execution. It
 	 * assumes that the microcode is already compiled, etc.
 	 */
-	bool main()
+	bool mainLoop()
 	{
+		if (FA_USE_PREDICATE_ABSTRACTION)
+		{
+			FA_DEBUG_AT(0, "Running the analysis with the folowing predicates:");
+			for (const AbstractInstruction* instr : this->GetAssembly().code_)
+			{
+				if (fi_type_e::fiFix == instr->getType())
+				{
+					const FI_abs* absInstr = dynamic_cast<const FI_abs*>(instr);
+					if (nullptr != absInstr)
+					{
+						for (const std::shared_ptr<const FAE>& pred : absInstr->getPredicates())
+						{
+							std::ostringstream os;
+							os << "\n---------------------------------------------------\n"
+								<< *absInstr << absInstr->insn();
+
+							const CodeStorage::Insn* clInsn = absInstr->insn();
+							assert(nullptr != clInsn);
+							assert(nullptr != clInsn->bb);
+							if (clInsn->bb->front() == clInsn)
+							{
+								os << " (" << clInsn->bb->name() << ")";
+							}
+
+							os << ": " << *absInstr->insn() << "\n" << *pred;
+
+							FA_DEBUG_AT(0, os.str());
+						}
+					}
+				}
+			}
+			FA_DEBUG_AT(0, "\n---------------------END---------------------------");
+		}
+
 		FA_DEBUG_AT(2, "creating empty heap ...");
 
 		// create an empty heap
@@ -230,43 +309,47 @@ protected:
 			assembly_.code_.front()
 		);
 
-		ExecState state;
+		SymState* state = nullptr;
 
 		try
 		{	// expecting problems...
-			size_t cntStates = 0;
-
-			while (execMan_.dequeueDFS(state))
+			while (nullptr != (state = execMan_.dequeueDFS()))
 			{	// process all states in the DFS order
-				const CodeStorage::Insn* insn = state.GetMem()->GetInstr()->insn();
+				assert(nullptr != state);
+
+				const CodeStorage::Insn* insn = state->GetInstr()->insn();
 				if (nullptr != insn)
 				{	// in case current instruction IS an instruction
 					FA_DEBUG_AT(2, SSD_INLINE_COLOR(C_LIGHT_RED, insn->loc << *insn));
-					FA_DEBUG_AT(2, state);
+					FA_DEBUG_AT(2, *state);
 				}
 				else
 				{
-					FA_DEBUG_AT(3, state);
+					FA_DEBUG_AT(3, *state);
 				}
 
 				if (testAndClearUserRequestFlag())
 				{
-					FA_NOTE("Executed " << std::setw(7) << cntStates << " states so far.");
+					FA_NOTE("Executed " << std::setw(7) << execMan_.statesEvaluated()
+						<< " states and " << std::setw(7) << execMan_.pathsEvaluated()
+						<< " paths so far.");
 				}
 
 				// run the state
-				execMan_.execute(state);
-				++cntStates;
+				execMan_.execute(*state);
 			}
 
 			return true;
 		}
 		catch (ProgramError& e)
 		{
-			const CodeStorage::Insn* insn = state.GetMem()->GetInstr()->insn();
-			if (nullptr != insn) {
+			assert(nullptr != e.state());
+
+			const CodeStorage::Insn* insn = e.state()->GetInstr()->insn();
+			if (nullptr != insn)
+			{
 				FA_NOTE_MSG(&insn->loc, SSD_INLINE_COLOR(C_LIGHT_RED, *insn));
-				FA_DEBUG_AT(2, std::endl << *state.GetMem()->GetFAE());
+				FA_DEBUG_AT(2, std::endl << *(e.state()->GetFAE()));
 			}
 
 			if (nullptr != e.location())
@@ -274,7 +357,7 @@ protected:
 			else
 				reportErrorNoLocation(e.what());
 
-			if ((conf_.printTrace) && (nullptr != e.state()))
+			if (conf_.printTrace)
 			{
 				FA_LOG_MSG(e.location(), "Printing trace");
 
@@ -283,7 +366,7 @@ protected:
 				Streams::trace(oss.str().c_str());
 			}
 
-			if ((conf_.printUcodeTrace) && (nullptr != e.state()))
+			if (conf_.printUcodeTrace)
 			{
 				FA_LOG_MSG(e.location(), "Printing microcode trace");
 
@@ -292,20 +375,60 @@ protected:
 				Streams::traceUcode(oss.str().c_str());
 			}
 
-			throw;
+			if (FA_USE_PREDICATE_ABSTRACTION)
+			{	// in case we are using predicate abstraction
+				FA_LOG("Executing backward run...");
+
+				// check whether the counterexample is spurious and in case it is collect
+				// some perhaps helpful information (failpoint and predicate)
+				BackwardRun bwdRun(execMan_);
+				SymState::Trace trace = e.state()->getTrace();
+				SymState* failPoint = nullptr;
+				std::shared_ptr<const FAE> predicate = nullptr;
+
+				bool isSpurious = bwdRun.isSpuriousCE(trace, failPoint, predicate);
+				if (isSpurious)
+				{
+					assert(nullptr != predicate);
+					assert(nullptr != failPoint);
+					assert(nullptr != failPoint->GetInstr());
+
+					FA_NOTE("The counterexample IS (PROBABLY) spurious");
+
+					FA_NOTE("Failing instuction: " << *failPoint->GetInstr());
+					FA_NOTE("Learnt predicate: " << *predicate);
+
+					// now, we add 'predicate' to the set of predicates that are used for
+					// abstraction at failPoint (which should BTW be abstraction)
+
+					FI_abs* absInstr = dynamic_cast<FI_abs*>(failPoint->GetInstr());
+					if (nullptr == absInstr)
+					{
+						assert(false);
+					}
+
+					// set the new predicate for abstraction
+					absInstr->addPredicate(predicate);
+
+					clearFixpoints();
+
+					return false;
+				}
+				else
+				{	// if the counterexample is not spurious
+					FA_NOTE("The counterexample IS real");
+
+					throw;
+				}
+			}
+			else
+			{	// in case we are using finite height abstraction
+				throw;
+			}
 		}
 		catch (RestartRequest& e)
 		{	// in case a restart is requested, clear all fixpoint computation points
-			for (auto instr : assembly_.code_)
-			{
-				if (instr->getType() != fi_type_e::fiFix)
-				{
-					continue;
-				}
-
-				// clear the fixpoint
-				static_cast<FixpointInstruction*>(instr)->clear();
-			}
+			clearFixpoints();
 
 			FA_DEBUG_AT(2, e.what());
 
@@ -357,8 +480,6 @@ public:   // methods
 			{
 				case cl_type_e::CL_TYPE_STRUCT: // for a structure
 
-					NodeBuilder::buildNode(v, type);
-
 					if (type->name)
 					{	// in case the structure has a name
 						name = std::string(type->name);
@@ -369,6 +490,8 @@ public:   // methods
 						ss << type->uid;
 						name = ss.str();
 					}
+
+					NodeBuilder::buildNode(v, type);
 
 					FA_DEBUG_AT(3, name);
 
@@ -381,13 +504,13 @@ public:   // methods
 		}
 
 		// ************ infer functions' stackframes ************
-		for (auto fnc : stor.fncs)
+		for (const CodeStorage::Fnc* fnc : stor.fncs)
 		{	// for each function in the storage, create a data structure representing
 			// its stackframe
 			std::vector<size_t> v;
 
 			const SymCtx ctx(*fnc);
-			for (auto sel : ctx.GetStackFrameLayout())
+			for (const SelData& sel : ctx.GetStackFrameLayout())
 			{	// create the stackframe
 				v.push_back(sel.offset);
 			}
@@ -460,8 +583,9 @@ public:   // methods
 
 		try
 		{	// expect problems...
-			while (!this->main())
+			while (!this->mainLoop())
 			{	// while the analysis hasn't terminated
+				FA_NOTE("Restarting the analysis...");
 			}
 
 			FA_NOTE("The program is SAFE.");
@@ -476,10 +600,12 @@ public:   // methods
 					continue;
 				}
 
-				if (instr->insn()) {
+				if (instr->insn())
+				{
 					FA_DEBUG_AT(1, "fixpoint at " << instr->insn()->loc << std::endl
 						<< (static_cast<FixpointInstruction*>(instr))->getFixPoint());
-				} else {
+				} else
+				{
 					FA_DEBUG_AT(1, "fixpoint at unknown location" << std::endl
 						<< (static_cast<FixpointInstruction*>(instr))->getFixPoint());
 				}

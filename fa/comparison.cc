@@ -20,23 +20,11 @@
 // Forester headers
 #include "comparison.hh"
 #include "executionmanager.hh"
+#include "streams.hh"
 
-struct Eq
+// anonymous namespace
+namespace
 {
-	bool operator()(const Data& x, const Data& y) const
-	{
-		return x == y;
-	}
-};
-
-struct Neq
-{
-	bool operator()(const Data& x, const Data& y) const
-	{
-		return x != y;
-	}
-};
-
 struct Lt
 {
 	bool operator()(const Data& x, const Data& y) const
@@ -66,6 +54,7 @@ struct Gt
 			"Gt()(): comparison of the corresponding types not supported");
 	}
 };
+}
 
 template <class F>
 inline void dataCmp(
@@ -93,10 +82,10 @@ inline void dataCmp(
 
 template <class F>
 inline void executeGeneric(
-	const FI_cmp_base&              cmp,
-	ExecutionManager&               execMan,
-	const ExecState&                state,
-	F                               f)
+	const FI_cmp_base&        cmp,
+	ExecutionManager&         execMan,
+	SymState&                 state,
+	F                         f)
 {
 	std::vector<bool> res;
 
@@ -104,30 +93,31 @@ inline void executeGeneric(
 
 	for (auto v : res)
 	{
-		std::shared_ptr<DataArray> regs = execMan.allocRegisters(state.GetRegs());
+		SymState* tmpState = execMan.createChildStateWithNewRegs(state, cmp.next_);
+		tmpState->SetReg(cmp.dstReg_, Data::createBool(v));
 
-		(*regs)[cmp.dst_] = Data::createBool(v);
-
-		execMan.enqueue(state.GetMem(), regs, state.GetMem()->GetFAE(), cmp.next_);
+		execMan.enqueue(tmpState);
 	}
 }
 
-void FI_eq::execute(ExecutionManager& execMan, const ExecState& state)
+void FI_eq::execute(ExecutionManager& execMan, SymState& state)
 {
-	executeGeneric(*this, execMan, state, Eq());
+	executeGeneric(*this, execMan, state,
+		[](const Data& x, const Data& y){return x == y;});
 }
 
-void FI_neq::execute(ExecutionManager& execMan, const ExecState& state)
+void FI_neq::execute(ExecutionManager& execMan, SymState& state)
 {
-	executeGeneric(*this, execMan, state, Neq());
+	executeGeneric(*this, execMan, state,
+		[](const Data& x, const Data& y){return x != y;});
 }
 
-void FI_lt::execute(ExecutionManager& execMan, const ExecState& state)
+void FI_lt::execute(ExecutionManager& execMan, SymState& state)
 {
 	executeGeneric(*this, execMan, state, Lt());
 }
 
-void FI_gt::execute(ExecutionManager& execMan, const ExecState& state)
+void FI_gt::execute(ExecutionManager& execMan, SymState& state)
 {
 	executeGeneric(*this, execMan, state, Gt());
 }

@@ -18,11 +18,16 @@
  */
 
 // Forester headers
+#include "executionmanager.hh"
 #include "jump.hh"
+#include "streams.hh"
 
-void FI_jmp::execute(ExecutionManager&, const ExecState&)
+void FI_jmp::execute(ExecutionManager& execMan, SymState& state)
 {
-	assert(false);
+	(void)execMan;
+	(void)state;
+
+	throw std::runtime_error("Reached unreachable operation: FI_jmp execution!");
 }
 
 void FI_jmp::finalize(
@@ -37,4 +42,17 @@ void FI_jmp::finalize(
 	}
 
 	this->next_->setTarget();
+}
+
+
+SymState* FI_jmp::reverseAndIsect(
+	ExecutionManager&                      execMan,
+	const SymState&                        fwdPred,
+	const SymState&                        bwdSucc) const
+{
+	(void)execMan;
+	(void)fwdPred;
+	(void)bwdSucc;
+
+	throw std::runtime_error("Reached unreachable operation: FI_jmp reversal!");
 }

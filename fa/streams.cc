@@ -19,10 +19,10 @@
 
 // Standard library headers
 #include <cassert>
+#include <cstring>
+#include <fcntl.h>
 #include <iostream>
-
-// Boost headers
-#include <boost/iostreams/device/file_descriptor.hpp>
+#include <unistd.h>
 
 // Code Listener headers
 #include <cl/cl_msg.hh>
@@ -40,6 +40,7 @@ namespace
 		FD_UCODE       = 3,             ///< FD for microcode output
 		FD_TRACE       = 4,             ///< FD for trace output
 		FD_TRACE_UCODE = 5,             ///< FD for microcode trace output
+		FD_ORIG_CODE   = 6              ///< FD for orignal code output
 	};
 
 	/// debugging level
@@ -205,4 +206,10 @@ void Streams::ucode(
 	const char*        ucodeStr)
 {
 	writeToFD(FD_UCODE, ucodeStr);
+}
+
+void Streams::origCode(
+	const char*        origCodeStr)
+{
+	writeToFD(FD_ORIG_CODE, origCodeStr);
 }

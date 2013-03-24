@@ -21,7 +21,7 @@ CTEST           ?= ctest
 .PHONY: all check clean cppcheck distclean distcheck version.h
 
 all: version.h
-	$(MAKE) -C ../cl_build # make sure the libcl.so is up2date
+	$(MAKE) -C ../cl_build # make sure that libcl.a is up2date
 	mkdir -p ../fwnull_build
 	cd ../fwnull_build && $(CMAKE) ../fwnull
 	$(MAKE) -C ../fwnull_build
@@ -52,4 +52,5 @@ distclean: clean
 	rm -rf ../fwnull_build
 
 distcheck: distclean
-	$(MAKE) check
+	$(MAKE) check CMAKE='cmake -D FWNULL_DEBUG=ON'
+	$(MAKE) check CMAKE='cmake -D FWNULL_DEBUG=OFF'

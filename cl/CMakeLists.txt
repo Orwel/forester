@@ -22,6 +22,9 @@ enable_testing()
 
 include("../build-aux/common.cmake")
 
+# suppress an unnecessary warning with gcc-4.4.x
+ADD_CXX_ONLY_FLAG("W_NO_INVALID_OFFSETOF" "-Wno-invalid-offsetof")
+
 option(CL_DEBUG "Set to ON to enable debugging support" OFF)
 if(CL_DEBUG)
     add_definitions("-O0 -g")
@@ -62,6 +65,20 @@ if (NOT EXISTS "${GCC_INC_DIR}/gcc-plugin.h")
     Please make sure the appropriate header files are installed.  On some Linux
     distributions a separate package (e.g. gcc-plugin-devel on Fedora) may be
     required for building GCC plug-ins.")
+endif()
+
+# check for 32bit C standard header files
+execute_process(COMMAND "${GCC_HOST}" -m32 -o /dev/null /usr/include/stdlib.h
+    RESULT_VARIABLE GCC_HOST_M32_STATUS)
+if ("${GCC_HOST_M32_STATUS}" EQUAL 0)
+    message(STATUS
+    "'${GCC_HOST} -m32 -o /dev/null /usr/include/stdlib.h' works")
+else()
+    message(FATAL_ERROR
+    "'${GCC_HOST} -m32 -o /dev/null /usr/include/stdlib.h' failed
+
+    Please make sure you have 32bit standard header files installed.  You need
+    to install glibc-devel.i686 on Fedora, or gcc-4.6-multilib on Ubuntu.")
 endif()
 
 # query CC1_HOST using GCC_HOST
@@ -124,11 +141,14 @@ add_library(cl STATIC
     clf_unilabel.cc
     clf_unswitch.cc
     clutil.cc
+    clplot.cc
     code_listener.cc
     gcc/clplug.c
     killer.cc
     loopscan.cc
     memdebug.cc
+    pointsto.cc
+    pointsto_fics.cc
     ssd.cc
     stopwatch.cc
     storage.cc

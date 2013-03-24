@@ -38,13 +38,17 @@
  */
 class ExecutionManager
 {
+private:  // data types
+
+	typedef std::list<SymState*> QueueType;
+
 private:  // data members
 
 	/// the root of the execution graph
 	SymState* root_;
 
 	/// the queue with the states to be processed
-	SymState::QueueType queue_;
+	QueueType queue_;
 
 	/// counter of evaluated states
 	size_t statesExecuted_;
@@ -102,7 +106,7 @@ public:
 
 	void clear()
 	{
-		if (root_)
+		if (nullptr != root_)
 		{
 			root_->recycle(stateRecycler_);
 			root_ = nullptr;
@@ -114,64 +118,119 @@ public:
 		pathsEvaluated_ = 0;
 	}
 
-	SymState* enqueue(SymState* parent, const std::shared_ptr<DataArray>& registers,
-		const std::shared_ptr<const FAE>& fae, AbstractInstruction* instr)
+	SymState* createState()
 	{
 		SymState* state = stateRecycler_.alloc();
+		assert(nullptr != state);
+		return state;
+	}
 
-		state->init(
-			parent,
-			instr,
-			fae,
-			queue_.insert(queue_.end(), ExecState(registers, state))
-		);
+
+	SymState* createChildState(
+		SymState&                          oldState,
+		AbstractInstruction*               instr)
+	{
+		SymState* state = createState();
+		state->initChildFrom(&oldState, instr);
 
 		return state;
 	}
 
-	SymState* enqueue(const ExecState& parent, AbstractInstruction* instr)
+	SymState* createChildStateWithNewRegs(
+		SymState&                          oldState,
+		AbstractInstruction*               instr)
 	{
-		SymState* state = stateRecycler_.alloc();
-
-		state->init(
-			parent.GetMem(),
-			instr,
-			parent.GetMem()->GetFAE(),
-			queue_.insert(queue_.end(), ExecState(parent.GetRegsShPtr(), state))
-		);
+		SymState* state = createState();
+		const std::shared_ptr<DataArray> regs = allocRegisters(oldState.GetRegs());
+		state->initChildFrom(&oldState, instr, regs);
 
 		return state;
 	}
 
-	bool dequeueBFS(ExecState& state)
+	SymState* copyState(
+		const SymState&                    oldState)
+	{
+		SymState* state = createState();
+		state->init(oldState);
+
+		return state;
+	}
+
+	SymState* copyStateWithNewRegs(
+		const SymState&                    oldState)
+	{
+		SymState* state = createState();
+		const std::shared_ptr<DataArray> regs = allocRegisters(oldState.GetRegs());
+		state->init(oldState, regs);
+
+		return state;
+	}
+
+	SymState* copyStateWithNewRegs(
+		const SymState&                    oldState,
+		const AbstractInstruction*         insn)
+	{
+		SymState* state = createState();
+		const std::shared_ptr<DataArray> regs = allocRegisters(oldState.GetRegs());
+		state->init(oldState, regs, const_cast<AbstractInstruction*>(insn));
+
+		return state;
+	}
+
+	SymState* enqueue(
+		SymState*                           parent,
+		const std::shared_ptr<DataArray>&   registers,
+		const std::shared_ptr<const FAE>&   fae,
+		AbstractInstruction*                instr)
+	{
+		SymState* state = createState();
+
+		state->init(parent, instr, fae, registers);
+		queue_.push_back(state);
+
+		return state;
+	}
+
+	SymState* enqueue(
+		SymState*                          state)
+	{
+		// Assertions
+		assert(nullptr != state);
+
+		queue_.push_back(state);
+		return state;
+	}
+
+	SymState* dequeueBFS()
 	{
 		if (queue_.empty())
-			return false;
+			return nullptr;
 
-		state = queue_.front();
+		SymState* state = queue_.front();
+		assert(nullptr != state);
+
 		queue_.pop_front();
 
-		state.GetMem()->SetQueueTag(queue_.end());
-
-		return true;
+		return state;
 	}
 
-	bool dequeueDFS(ExecState& state)
+	SymState* dequeueDFS()
 	{
 		if (queue_.empty())
-			return false;
+			return nullptr;
 
-		state = queue_.back();
+		SymState* state = queue_.back();
+		assert(nullptr != state);
+
 		queue_.pop_back();
 
-		state.GetMem()->SetQueueTag(queue_.end());
-
-		return true;
+		return state;
 	}
 
 	std::shared_ptr<DataArray> allocRegisters(const DataArray& model)
 	{
 		DataArray* v = registerRecycler_.alloc();
+		assert(nullptr != v);
 
 		*v = model;
 
@@ -185,11 +244,14 @@ public:
 		root_ = this->enqueue(nullptr, this->allocRegisters(registers), fae, instr);
 	}
 
-	void execute(ExecState& state)
+	void execute(SymState& state)
 	{
+		// Assertions
+		assert(nullptr != state.GetInstr());
+
 		++statesExecuted_;
 
-		state.GetMem()->GetInstr()->execute(*this, state);
+		state.GetInstr()->execute(*this, state);
 	}
 
 	void pathFinished(SymState* state)
@@ -199,10 +261,27 @@ public:
 		this->destroyBranch(state);
 	}
 
+	/**
+	 * @brief  Recycles a state
+	 *
+	 * Recycles a state using the associated recycler.
+	 *
+	 * @param[in]  state  The state to be recycled
+	 */
+	void recycleState(
+		SymState*                       state)
+	{
+		// Assertions
+		assert(nullptr != state);
+
+		state->recycle(stateRecycler_);
+	}
+
+
 	void destroyBranch(SymState* state)
 	{
 		// Assertions
-		assert(state);
+		assert(nullptr != state);
 
 		while (state->GetParent())
 		{
@@ -210,7 +289,11 @@ public:
 			assert(state->GetParent()->GetChildren().size());
 
 			if (state->GetInstr()->getType() == fi_type_e::fiFix)
-				(static_cast<FixpointInstruction*>(state->GetInstr()))->extendFixpoint(state->GetFAE());
+			{
+				FixpointInstruction* fixpoint =
+					static_cast<FixpointInstruction*>(state->GetInstr());
+				fixpoint->extendFixpoint(state->GetFAE());
+			}
 
 			if (state->GetParent()->GetChildren().size() > 1)
 			{
@@ -218,7 +301,7 @@ public:
 				return;
 			}
 
-			state = state->GetParent();
+			state = static_cast<SymState*>(state->GetParent());
 		}
 
 		// Assertions
